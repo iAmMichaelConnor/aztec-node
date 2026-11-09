@@ -32,6 +32,26 @@ setting it starts with the default of 30s rather than the value it was given.
 
 ## Unreleased
 
+### Blob filestore uploads retry transient storage errors
+
+Blob uploads from proposers, validators and blob retrieval now share a retry policy: after the first failure,
+retry after 1, 2, 4, 8 and 16 seconds. Existing blobs are skipped when retrying a partially successful batch.
+Exhausted uploads log an error with the blob hashes and return failure rather than throwing. Startup healthcheck
+uploads use the same retries but no longer fail node startup; periodic healthchecks continue after an outage,
+without overlapping runs.
+
+New metrics distinguish transient storage errors from requests that exhaust their retries:
+
+- `aztec.blob_client.upload_attempt_count`: storage attempts, labelled by attempt outcome.
+- `aztec.blob_client.upload_request_count`: upload requests, labelled by final outcome after retries.
+- `aztec.blob_client.upload_duration`: request duration in milliseconds, including retries.
+
+All three use `aztec.blob_client.upload_type` (`blobs` or `healthcheck`) and `aztec.status` (`success` or `failure`).
+A blob request counts a batch, not individual blobs. Alert on failed blob upload requests to detect possible gaps.
+Retries are in memory only: exhausted uploads and uploads interrupted by a restart are not queued for backfill.
+
+**Migration**: none.
+
 ### Prover nodes prove epochs that an early proof already covered ([#693](https://github.com/aztec-labs-eng/aztec-node/pull/693))
 
 A proof that lands while its epoch is still open, such as an early-withdrawal partial proof requested through `startProof`, moves the proven tip past the epoch. L1 registers that proof as non-full and still rewards a full-epoch proof from every prover until the epoch's submission window closes. Prover nodes used to schedule from the proven tip alone, so they skipped such an epoch and lost its prover reward share and activity-score increase.
