@@ -27,6 +27,7 @@ export class TXEOraclePublicContext implements IAvmExecutionOracle {
   private publicDataWrites: PublicDataWrite[] = [];
 
   constructor(
+    private msgSender: AztecAddress,
     private contractAddress: AztecAddress,
     private forkedWorldTrees: MerkleTreeWriteOperations,
     private txRequestHash: Fr,
@@ -47,7 +48,7 @@ export class TXEOraclePublicContext implements IAvmExecutionOracle {
   }
 
   sender(): Promise<AztecAddress> {
-    return Promise.resolve(AztecAddress.ZERO); // todo: change?
+    return Promise.resolve(this.msgSender);
   }
 
   blockNumber(): Promise<BlockNumber> {

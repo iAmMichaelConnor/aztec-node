@@ -101,8 +101,8 @@ export class RPCTranslator {
     return callTxeHandler({
       oracle: 'aztec_txe_setPrivateTXEContext',
       inputs,
-      handler: ([contractAddress, anchorBlockNumber, gasSettings]) =>
-        this.stateHandler.enterPrivateState(contractAddress, anchorBlockNumber, gasSettings),
+      handler: ([from, additionalScopes, contractAddress, anchorBlockNumber, gasSettings]) =>
+        this.stateHandler.enterPrivateState(from, additionalScopes, contractAddress, anchorBlockNumber, gasSettings),
     });
   }
 
@@ -111,7 +111,7 @@ export class RPCTranslator {
     return callTxeHandler({
       oracle: 'aztec_txe_setPublicTXEContext',
       inputs,
-      handler: ([contractAddress]) => this.stateHandler.enterPublicState(contractAddress),
+      handler: ([from, contractAddress]) => this.stateHandler.enterPublicState(from, contractAddress),
     });
   }
 

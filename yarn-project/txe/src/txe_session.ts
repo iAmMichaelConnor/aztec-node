@@ -132,8 +132,16 @@ export interface TXESessionStateHandler {
   setTxeOracleVersion(major: number, minor: number): void;
 
   enterTopLevelState(): Promise<void>;
-  enterPublicState(contractAddress: Option<AztecAddress>): Promise<void>;
+  /** Enters a public context at `contractAddress`, called by `from`. */
+  enterPublicState(from: Option<AztecAddress>, contractAddress: Option<AztecAddress>): Promise<void>;
+  /**
+   * Enters a private context at `contractAddress`. When `from` is set it is the caller, the sender for tags and the
+   * only address in scope, as in a private call; otherwise the caller is the zero address and all accounts are in
+   * scope. `additionalScopes` are in scope in both cases.
+   */
   enterPrivateState(
+    from: Option<AztecAddress>,
+    additionalScopes: AztecAddress[],
     contractAddress: Option<AztecAddress>,
     anchorBlockNumber: Option<BlockNumber>,
     gasSettings: GasSettingsData,
@@ -739,11 +747,15 @@ export class TXESession implements TXESessionStateHandler {
   }
 
   async enterPrivateState(
+    fromOpt: Option<AztecAddress>,
+    additionalScopes: AztecAddress[],
     contractAddressOpt: Option<AztecAddress>,
     anchorBlockNumberOpt: Option<BlockNumber>,
     gasSettings: GasSettingsData,
   ): Promise<PrivateContextInputs> {
+    const from = fromOpt?.value;
     const contractAddress = contractAddressOpt?.value ?? DEFAULT_ADDRESS;
+    const scopes = [...(from ? [from] : await this.keyStore.getAccounts()), ...additionalScopes];
     const anchorBlockNumber = anchorBlockNumberOpt?.value;
     this.exitTopLevelState();
     this.resetLastCall();
@@ -758,7 +770,7 @@ export class TXESession implements TXESessionStateHandler {
       this.stateMachine.node,
       anchorBlock!,
       this.currentChangeSetId,
-    ).syncNoteNullifiers(contractAddress, await this.keyStore.getAccounts());
+    ).syncNoteNullifiers(contractAddress, scopes);
     const latestBlock = await this.stateMachine.node.getBlock('latest').then(b => b?.header);
 
     const nextBlockGlobalVariables = makeGlobalVariables(undefined, {
@@ -784,7 +796,7 @@ export class TXESession implements TXESessionStateHandler {
       argsHash: Fr.ZERO,
       txContext: new TxContext(this.chainId, this.version, GasSettings.from(gasSettings)),
       protocolNullifier,
-      callContext: new CallContext(AztecAddress.ZERO, contractAddress, FunctionSelector.empty(), false),
+      callContext: new CallContext(from ?? AztecAddress.ZERO, contractAddress, FunctionSelector.empty(), false),
       anchorBlockHeader: anchorBlock!,
       utilityExecutor,
       authWitnesses: [],
@@ -800,13 +812,14 @@ export class TXESession implements TXESessionStateHandler {
       senderTaggingStore: this.senderTaggingStore,
       recipientTaggingStore: this.recipientTaggingStore,
       messagingSecretSourcesStore: this.messagingSecretSourcesStore,
-      capsuleService: new CapsuleService(this.capsuleStore, await this.keyStore.getAccounts()),
-      factService: new FactService(this.factStore, await this.keyStore.getAccounts()),
+      capsuleService: new CapsuleService(this.capsuleStore, scopes),
+      factService: new FactService(this.factStore, scopes),
       privateEventStore: this.privateEventStore,
       contractSyncService: this.stateMachine.contractSyncService,
       l2TipsStore: this.stateMachine.l2TipsProvider,
       changeSetId: this.currentChangeSetId,
-      scopes: await this.keyStore.getAccounts(),
+      scopes,
+      senderForTags: from,
       txResolver: this.stateMachine.txResolver,
       simulator: new WASMSimulator(),
       hooks: this.buildExecutionHooks(),
@@ -828,7 +841,7 @@ export class TXESession implements TXESessionStateHandler {
     return (this.oracleHandler as TXEPrivateExecutionOracle).getPrivateContextInputs();
   }
 
-  async enterPublicState(contractAddressOpt: Option<AztecAddress>) {
+  async enterPublicState(fromOpt: Option<AztecAddress>, contractAddressOpt: Option<AztecAddress>) {
     const contractAddress = contractAddressOpt?.value ?? DEFAULT_ADDRESS;
     this.exitTopLevelState();
     this.resetLastCall();
@@ -844,6 +857,7 @@ export class TXESession implements TXESessionStateHandler {
     });
 
     this.oracleHandler = new TXEOraclePublicContext(
+      fromOpt?.value ?? AztecAddress.ZERO,
       contractAddress,
       await this.stateMachine.synchronizer.nativeWorldStateService.fork(),
       getSingleTxBlockRequestHash(globalVariables.blockNumber),

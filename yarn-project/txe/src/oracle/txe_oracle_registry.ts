@@ -212,6 +212,8 @@ export const TXE_ORACLE_REGISTRY = {
 
   aztec_txe_setPrivateTXEContext: makeEntry({
     params: [
+      { name: 'from', type: OPTION(AZTEC_ADDRESS) },
+      { name: 'additionalScopes', type: ARRAY(AZTEC_ADDRESS) },
       { name: 'contractAddress', type: OPTION(AZTEC_ADDRESS) },
       { name: 'anchorBlockNumber', type: OPTION(BLOCK_NUMBER) },
       { name: 'gasSettings', type: GAS_SETTINGS },
@@ -220,7 +222,10 @@ export const TXE_ORACLE_REGISTRY = {
   }),
 
   aztec_txe_setPublicTXEContext: makeEntry({
-    params: [{ name: 'contractAddress', type: OPTION(AZTEC_ADDRESS) }],
+    params: [
+      { name: 'from', type: OPTION(AZTEC_ADDRESS) },
+      { name: 'contractAddress', type: OPTION(AZTEC_ADDRESS) },
+    ],
   }),
 
   aztec_txe_setUtilityTXEContext: makeEntry({

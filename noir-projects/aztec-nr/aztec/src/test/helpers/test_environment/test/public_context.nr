@@ -1,4 +1,7 @@
-use crate::{context::gas::GasOpts, test::{helpers::test_environment::TestEnvironment, mocks::MockStruct}};
+use crate::{
+    context::gas::GasOpts,
+    test::{helpers::test_environment::{PublicContextOptions, TestEnvironment}, mocks::MockStruct},
+};
 use crate::protocol::{abis::function_selector::FunctionSelector, address::AztecAddress, traits::FromField};
 
 use std::mem::zeroed;
@@ -16,6 +19,28 @@ unconstrained fn at_sets_contract_address() {
     let contract_address = AztecAddress::from_field(17);
 
     env.public_context_at(contract_address, |context| { assert_eq(context.this_address(), contract_address); });
+}
+
+#[test]
+unconstrained fn msg_sender_defaults_to_the_zero_address() {
+    let env = TestEnvironment::new();
+
+    env.public_context(|context| { assert_eq(context.maybe_msg_sender(), Option::some(AztecAddress::zero())); });
+}
+
+#[test]
+unconstrained fn opts_sets_contract_address_and_msg_sender() {
+    let env = TestEnvironment::new();
+    let contract_address = AztecAddress::from_field(17);
+    let from = AztecAddress::from_field(18);
+
+    env.public_context_opts(
+        PublicContextOptions::new().at_contract_address(contract_address).with_from(from),
+        |context| {
+            assert_eq(context.this_address(), contract_address);
+            assert_eq(context.maybe_msg_sender(), Option::some(from));
+        },
+    );
 }
 
 #[test]

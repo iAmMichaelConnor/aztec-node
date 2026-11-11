@@ -174,7 +174,9 @@ impl TestEnvironmentOptions {
 /// ```noir
 /// env.private_context_opts(PrivateContextOptions::new().at_anchor_block_number(5), ...);
 /// ```
-pub struct PrivateContextOptions {
+pub struct PrivateContextOptions<let S: u32> {
+    from: Option<AztecAddress>,
+    additional_scopes: [AztecAddress; S],
     contract_address: Option<AztecAddress>,
     anchor_block_number: Option<u32>,
     gas_limits: Option<Gas>,
@@ -183,13 +185,15 @@ pub struct PrivateContextOptions {
     max_priority_fees_per_gas: Option<GasFees>,
 }
 
-impl PrivateContextOptions {
+impl PrivateContextOptions<0> {
     /// Creates a new `PrivateContextOptions` with default values, i.e. the same as if using
     /// [`TestEnvironment::private_context`] instead of [`TestEnvironment::private_context_opts`]. Use
     /// [`at_anchor_block_number`](PrivateContextOptions::at_anchor_block_number) and other methods to set the desired
     /// configuration values.
     pub fn new() -> Self {
         Self {
+            from: Option::none(),
+            additional_scopes: [],
             contract_address: Option::none(),
             anchor_block_number: Option::none(),
             gas_limits: Option::none(),
@@ -198,7 +202,9 @@ impl PrivateContextOptions {
             max_priority_fees_per_gas: Option::none(),
         }
     }
+}
 
+impl<let S: u32> PrivateContextOptions<S> {
     /// Sets the desired anchor block number to base the private context in. Only past block numbers can be specified.
     ///
     /// If not set, defaults to the last block number.
@@ -212,6 +218,41 @@ impl PrivateContextOptions {
     pub fn at_contract_address(&mut self, contract_address: AztecAddress) -> Self {
         self.contract_address = Option::some(contract_address);
         *self
+    }
+
+    /// Sets the address the private context executes on behalf of.
+    ///
+    /// As with the `from` of [`TestEnvironment::call_private`], it is the `msg_sender`, the default sender for tags
+    /// of the messages delivered from the context, and the only address whose notes and keys can be accessed. It
+    /// need not be an account. Use [`with_additional_scopes`](PrivateContextOptions::with_additional_scopes) to
+    /// access the notes and keys of other addresses.
+    ///
+    /// If not set, the `msg_sender` is the zero address, there is no default sender for tags, and the notes and keys
+    /// of all accounts can be accessed.
+    pub fn with_from(&mut self, from: AztecAddress) -> Self {
+        self.from = Option::some(from);
+        *self
+    }
+
+    /// Grants access to the notes and keys of additional addresses.
+    ///
+    /// They are in scope together with the address set via [`with_from`](PrivateContextOptions::with_from). Without
+    /// `with_from` they are added to all accounts, whereas a call has only its additional scopes. They need not be
+    /// accounts: an address without keys is in scope only if it is the `from` address or is added here.
+    pub fn with_additional_scopes<let S_2: u32>(
+        self,
+        additional_scopes: [AztecAddress; S_2],
+    ) -> PrivateContextOptions<S_2> {
+        PrivateContextOptions {
+            from: self.from,
+            additional_scopes,
+            contract_address: self.contract_address,
+            anchor_block_number: self.anchor_block_number,
+            gas_limits: self.gas_limits,
+            teardown_gas_limits: self.teardown_gas_limits,
+            max_fees_per_gas: self.max_fees_per_gas,
+            max_priority_fees_per_gas: self.max_priority_fees_per_gas,
+        }
     }
 
     /// Sets the gas limits for the transaction.
@@ -270,8 +311,37 @@ impl PrivateContextOptions {
     }
 }
 
-struct PublicContextOptions {
+/// Configuration values for [`TestEnvironment::public_context_opts`]. Meant to be used by calling `new` and then
+/// chaining methods setting each value, e.g.:
+/// ```noir
+/// env.public_context_opts(PublicContextOptions::new().with_from(caller), ...);
+/// ```
+pub struct PublicContextOptions {
+    from: Option<AztecAddress>,
     contract_address: Option<AztecAddress>,
+}
+
+impl PublicContextOptions {
+    /// Creates a new `PublicContextOptions` with default values, i.e. the same as if using
+    /// [`TestEnvironment::public_context`] instead of [`TestEnvironment::public_context_opts`].
+    pub fn new() -> Self {
+        Self { from: Option::none(), contract_address: Option::none() }
+    }
+
+    /// Sets the contract address in which the public context will execute, which will affect note and nullifier
+    /// siloing, storage access, etc.
+    pub fn at_contract_address(&mut self, contract_address: AztecAddress) -> Self {
+        self.contract_address = Option::some(contract_address);
+        *self
+    }
+
+    /// Sets the `msg_sender` of the public context, as the `from` of [`TestEnvironment::call_public`] does.
+    ///
+    /// If not set, the `msg_sender` is the zero address.
+    pub fn with_from(&mut self, from: AztecAddress) -> Self {
+        self.from = Option::some(from);
+        *self
+    }
 }
 
 struct UtilityContextOptions {
@@ -758,14 +828,15 @@ impl TestEnvironment {
     /// A new block is automatically mined once `public_context` returns, containing all of the side effects caused by
     /// its execution (e.g. public storage writes). It is however **NOT** possible to make any contract calls from this
     /// public context - use `call_public` for testing contract calls (though usage of `call_public` is forbidden while
-    /// inside `public_context`).
+    /// inside `public_context`). Emitting public logs is not supported either.
     ///
     /// Receives a callback function which is called with the created `PublicContext` - this function is where testing
     /// logic is expected to reside. Any values returned by it are bubbled-up and returned to the caller of
     /// `public_context`. Do **NOT** return the `PublicContext` from the callback function, or use it in any way
     /// outside of it - it becomes invalid once `public_context` returns.
     ///
-    /// See `public_context_at` for a variant that allows specifying the contract address.
+    /// See `public_context_at` for a variant that allows specifying the contract address, or `public_context_opts`
+    /// for even more configurability.
     ///
     /// ### Sample usage
     /// ```noir
@@ -784,7 +855,7 @@ impl TestEnvironment {
     /// });
     /// ```
     pub unconstrained fn public_context<Env, T>(self: Self, f: unconstrained fn[Env](PublicContext) -> T) -> T {
-        self.public_context_opts(PublicContextOptions { contract_address: Option::none() }, f)
+        self.public_context_opts(PublicContextOptions::new(), f)
     }
 
     /// Variant of [`TestEnvironment::public_context`] which allows specifying the contract address in which the
@@ -794,15 +865,17 @@ impl TestEnvironment {
         addr: AztecAddress,
         f: unconstrained fn[Env](PublicContext) -> T,
     ) -> T {
-        self.public_context_opts(PublicContextOptions { contract_address: Option::some(addr) }, f)
+        self.public_context_opts(PublicContextOptions::new().at_contract_address(addr), f)
     }
 
-    unconstrained fn public_context_opts<Env, T>(
+    /// Variant of [`TestEnvironment::public_context`] which allows specifying multiple configuration values via
+    /// [`PublicContextOptions`].
+    pub unconstrained fn public_context_opts<Env, T>(
         _self: Self,
         opts: PublicContextOptions,
         f: unconstrained fn[Env](PublicContext) -> T,
     ) -> T {
-        txe_oracles::set_public_txe_context(opts.contract_address);
+        txe_oracles::set_public_txe_context(opts.from, opts.contract_address);
 
         let context = PublicContext::new(|| 0);
         let ret_value = f(context);
@@ -824,6 +897,11 @@ impl TestEnvironment {
     /// logic is expected to reside. Any values returned by it are bubbled-up and returned to the caller of
     /// `private_context`. Do **NOT** return the `PrivateContext` from the callback function, or use it in any way
     /// outside of it - it becomes invalid once `private_context` returns.
+    ///
+    /// Messages delivered onchain from the context are not included in the block: use
+    /// [`TestEnvironment::discover_note`] to process the note messages the callback returns. Delivery only runs if
+    /// it needs no contract call: not with constrained onchain delivery, and only to recipients whose keys are in
+    /// scope.
     ///
     /// See `private_context_at` for a variant that allows specifying the contract address, or `private_context_opts`
     /// for even more configurability.
@@ -861,13 +939,15 @@ impl TestEnvironment {
 
     /// Variant of [`TestEnvironment::private_context`] which allows specifying multiple configuration values via
     /// [`PrivateContextOptions`].
-    pub unconstrained fn private_context_opts<Env, T>(
+    pub unconstrained fn private_context_opts<Env, T, let S: u32>(
         _self: Self,
-        opts: PrivateContextOptions,
+        opts: PrivateContextOptions<S>,
         f: unconstrained fn[Env](&mut PrivateContext) -> T,
     ) -> T {
         let mut context = PrivateContext::new(
             txe_oracles::set_private_txe_context(
+                opts.from,
+                opts.additional_scopes,
                 opts.contract_address,
                 opts.anchor_block_number,
                 opts.resolve_gas_settings(),

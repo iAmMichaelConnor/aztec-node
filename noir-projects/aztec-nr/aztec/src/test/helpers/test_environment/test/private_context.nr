@@ -1,5 +1,9 @@
 use crate::ephemeral::EphemeralArray;
+use crate::keys::getters::get_public_keys;
+use crate::messages::delivery::MessageDelivery;
+use crate::note::{lifecycle::create_note, note_getter::get_note};
 use crate::oracle::block_header::get_block_header_at;
+use crate::oracle::notes::get_sender_for_tags;
 use crate::oracle::nullifiers::{check_nullifier_exists, get_nullifier_statuses};
 use crate::protocol::{
     abis::{function_selector::FunctionSelector, gas::Gas, gas_fees::GasFees, gas_settings::GasSettings},
@@ -7,7 +11,9 @@ use crate::protocol::{
     constants::{MAX_PROCESSABLE_DA_GAS_PER_CHECKPOINT, MAX_PROCESSABLE_L2_GAS},
     traits::{FromField, Hash},
 };
-use crate::test::helpers::test_environment::{PrivateContextOptions, TestEnvironment};
+use crate::test::{helpers::test_environment::{PrivateContextOptions, TestEnvironment}, mocks::mock_note::MockNote};
+
+global STORAGE_SLOT: Field = 13;
 
 #[test]
 unconstrained fn at_sets_contract_address() {
@@ -41,6 +47,228 @@ unconstrained fn opts_sets_contract_address_and_anchor_block_number() {
             assert_eq(context.get_anchor_block_header().block_number(), anchor_block_number);
         },
     );
+}
+
+#[test]
+unconstrained fn msg_sender_defaults_to_the_zero_address() {
+    let env = TestEnvironment::new();
+
+    env.private_context(|context| { assert_eq(context.maybe_msg_sender(), Option::some(AztecAddress::zero())); });
+}
+
+#[test]
+unconstrained fn sender_for_tags_is_unset_by_default() {
+    let env = TestEnvironment::new();
+
+    env.private_context(|_| { assert(get_sender_for_tags().is_none()); });
+}
+
+#[test]
+unconstrained fn with_from_accepts_an_address_that_is_not_an_account() {
+    let env = TestEnvironment::new();
+    let from = AztecAddress::from_field(17);
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        assert_eq(context.maybe_msg_sender(), Option::some(from));
+    });
+}
+
+#[test]
+unconstrained fn with_from_sets_msg_sender() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        assert_eq(context.maybe_msg_sender(), Option::some(from));
+    });
+}
+
+#[test]
+unconstrained fn with_from_sets_sender_for_tags() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |_| {
+        assert_eq(get_sender_for_tags(), Option::some(from));
+    });
+}
+
+#[test]
+unconstrained fn with_from_delivers_messages_to_a_recipient_in_scope() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+    let recipient = env.create_light_account();
+
+    env.private_context_opts(
+        PrivateContextOptions::new().with_from(from).with_additional_scopes([recipient]),
+        |context| {
+            create_note(
+                context,
+                recipient,
+                STORAGE_SLOT,
+                MockNote::new(7).build_note(),
+            )
+                .deliver(MessageDelivery::onchain_unconstrained());
+        },
+    );
+}
+
+#[test]
+unconstrained fn with_from_delivers_messages_to_from() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        create_note(context, from, STORAGE_SLOT, MockNote::new(7).build_note()).deliver(
+            MessageDelivery::onchain_unconstrained(),
+        );
+    });
+}
+
+#[test(should_fail_with = "Sender for tags is not set")]
+unconstrained fn does_not_deliver_messages_of_the_context_by_default() {
+    let mut env = TestEnvironment::new();
+    let recipient = env.create_light_account();
+
+    env.private_context(|context| {
+        create_note(
+            context,
+            recipient,
+            STORAGE_SLOT,
+            MockNote::new(7).build_note(),
+        )
+            .deliver(MessageDelivery::onchain_unconstrained());
+    });
+}
+
+#[test]
+unconstrained fn with_from_accesses_keys_of_from() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        let _ = context.request_nhk_app(get_public_keys(from).npk_m_hash);
+    });
+}
+
+#[test(should_fail_with = "Key validation request denied")]
+unconstrained fn with_from_does_not_access_keys_of_other_accounts() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+    let other = env.create_light_account();
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        let _ = context.request_nhk_app(get_public_keys(other).npk_m_hash);
+    });
+}
+
+#[test]
+unconstrained fn with_from_accesses_notes_of_from() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+    let note = MockNote::new(7).build_note();
+
+    let note_message = env.private_context(|context| create_note(context, from, STORAGE_SLOT, note));
+    env.discover_note(note_message);
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        assert_eq(get_note::<MockNote>(context, Option::some(from), STORAGE_SLOT).note, note);
+    });
+}
+
+#[test(should_fail_with = "Failed to get a note")]
+unconstrained fn with_from_does_not_access_notes_of_other_accounts() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+    let other = env.create_light_account();
+
+    let note_message =
+        env.private_context(|context| create_note(context, other, STORAGE_SLOT, MockNote::new(7).build_note()));
+    env.discover_note(note_message);
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        let _ = get_note::<MockNote>(context, Option::some(other), STORAGE_SLOT);
+    });
+}
+
+#[test(should_fail_with = "Failed to get a note")]
+unconstrained fn does_not_access_notes_of_an_address_that_is_not_an_account_by_default() {
+    let env = TestEnvironment::new();
+    let owner = AztecAddress::from_field(17);
+
+    let note_message =
+        env.private_context(|context| create_note(context, owner, STORAGE_SLOT, MockNote::new(7).build_note()));
+    env.discover_note(note_message);
+
+    env.private_context(|context| { let _ = get_note::<MockNote>(context, Option::some(owner), STORAGE_SLOT); });
+}
+
+#[test]
+unconstrained fn with_additional_scopes_accesses_notes_of_an_address_that_is_not_an_account() {
+    let env = TestEnvironment::new();
+    let owner = AztecAddress::from_field(17);
+    let note = MockNote::new(7).build_note();
+
+    let note_message = env.private_context(|context| create_note(context, owner, STORAGE_SLOT, note));
+    env.discover_note(note_message);
+
+    env.private_context_opts(PrivateContextOptions::new().with_additional_scopes([owner]), |context| {
+        assert_eq(get_note::<MockNote>(context, Option::some(owner), STORAGE_SLOT).note, note);
+    });
+}
+
+#[test]
+unconstrained fn with_additional_scopes_keeps_all_accounts_in_scope_by_default() {
+    let mut env = TestEnvironment::new();
+    let account = env.create_light_account();
+    let note = MockNote::new(7).build_note();
+
+    let note_message = env.private_context(|context| create_note(context, account, STORAGE_SLOT, note));
+    env.discover_note(note_message);
+
+    env.private_context_opts(
+        PrivateContextOptions::new().with_additional_scopes([AztecAddress::from_field(17)]),
+        |context| { assert_eq(get_note::<MockNote>(context, Option::some(account), STORAGE_SLOT).note, note); },
+    );
+}
+
+#[test]
+unconstrained fn with_from_accesses_notes_of_a_from_that_is_not_an_account() {
+    let env = TestEnvironment::new();
+    let from = AztecAddress::from_field(17);
+    let note = MockNote::new(7).build_note();
+
+    let note_message = env.private_context(|context| create_note(context, from, STORAGE_SLOT, note));
+    env.discover_note(note_message);
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from), |context| {
+        assert_eq(get_note::<MockNote>(context, Option::some(from), STORAGE_SLOT).note, note);
+    });
+}
+
+#[test]
+unconstrained fn options_can_be_set_in_any_order() {
+    let env = TestEnvironment::new();
+    let from = AztecAddress::from_field(17);
+
+    env.private_context_opts(PrivateContextOptions::new().with_additional_scopes([]).with_from(from), |context| {
+        assert_eq(context.maybe_msg_sender(), Option::some(from));
+    });
+}
+
+#[test]
+unconstrained fn with_additional_scopes_accesses_notes_of_other_accounts() {
+    let mut env = TestEnvironment::new();
+    let from = env.create_light_account();
+    let other = env.create_light_account();
+    let note = MockNote::new(7).build_note();
+
+    let note_message = env.private_context(|context| create_note(context, other, STORAGE_SLOT, note));
+    env.discover_note(note_message);
+
+    env.private_context_opts(PrivateContextOptions::new().with_from(from).with_additional_scopes([other]), |context| {
+        assert_eq(get_note::<MockNote>(context, Option::some(other), STORAGE_SLOT).note, note);
+    });
 }
 
 #[test]

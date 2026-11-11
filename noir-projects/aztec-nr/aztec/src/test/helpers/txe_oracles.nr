@@ -21,7 +21,7 @@ use crate::protocol::{
 /// [`oracle::version`](crate::oracle::version), which covers oracles used during contract execution by PXE.
 ///
 /// The TypeScript counterparts are in `yarn-project/txe/src/oracle/txe_oracle_version.ts`.
-pub global TXE_ORACLE_VERSION_MAJOR: Field = 11;
+pub global TXE_ORACLE_VERSION_MAJOR: Field = 12;
 pub global TXE_ORACLE_VERSION_MINOR: Field = 0;
 
 /// Asserts that the TXE oracle interface version is compatible.
@@ -106,12 +106,20 @@ pub unconstrained fn public_call_new_flow<let M: u32, let N: u32>(
     )
 }
 
-pub unconstrained fn set_private_txe_context(
+pub unconstrained fn set_private_txe_context<let S: u32>(
+    from: Option<AztecAddress>,
+    additional_scopes: [AztecAddress; S],
     contract_address: Option<AztecAddress>,
     anchor_block_number: Option<u32>,
     gas_settings: GasSettings,
 ) -> PrivateContextInputs {
-    set_private_txe_context_oracle(contract_address, anchor_block_number, gas_settings)
+    set_private_txe_context_oracle(
+        from,
+        additional_scopes,
+        contract_address,
+        anchor_block_number,
+        gas_settings,
+    )
 }
 
 pub unconstrained fn execute_utility_function<let M: u32, let N: u32, let T: u32>(
@@ -286,14 +294,16 @@ unconstrained fn execute_utility_function_oracle<let M: u32, let N: u32, let T: 
 pub unconstrained fn set_top_level_txe_context() {}
 
 #[oracle(aztec_txe_setPrivateTXEContext)]
-unconstrained fn set_private_txe_context_oracle(
+unconstrained fn set_private_txe_context_oracle<let S: u32>(
+    _from: Option<AztecAddress>,
+    _additional_scopes: [AztecAddress; S],
     _contract_address: Option<AztecAddress>,
     _anchor_block_number: Option<u32>,
     _gas_settings: GasSettings,
 ) -> PrivateContextInputs {}
 
 #[oracle(aztec_txe_setPublicTXEContext)]
-pub unconstrained fn set_public_txe_context(contract_address: Option<AztecAddress>) {}
+pub unconstrained fn set_public_txe_context(from: Option<AztecAddress>, contract_address: Option<AztecAddress>) {}
 
 #[oracle(aztec_txe_setUtilityTXEContext)]
 pub unconstrained fn set_utility_txe_context(contract_address: Option<AztecAddress>) {}

@@ -39,11 +39,19 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### New features
 
+- **A `TestEnvironment` context can run on behalf of an address** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)), set with `PrivateContextOptions::with_from` or with `PublicContextOptions::with_from` and the new `public_context_opts`. It is the `msg_sender` the code under test reads. In a private context it is also the default sender for tags and the only address whose notes and keys are accessible, as with the `from` of `call_private`, and `PrivateContextOptions::with_additional_scopes` adds further addresses, including ones without keys. Code that checks its caller, reads the notes of such an address, or delivers a message with an unconstrained or offchain mode to a recipient in scope can therefore be tested in a context, without deploying a contract.
 - **`MessagingSecretStrategy::recipient_tsk()` selects the `recipient-tsk` strategy in Noir tests** ([#642](https://github.com/aztec-labs-eng/aztec-node/pull/642)), set with `with_default_messaging_secret_strategy`. It is also the default strategy PXE uses if the recipient keys are in scope, so unconstrained sends to any `TestEnvironment` account, self-sends included, also use it.
 - **`get_tx_effects_with_block` returns each settled transaction's effects with the block that included it** ([#550](https://github.com/aztec-labs-eng/aztec-node/pull/550)). A contract that calls it needs a PXE on oracle interface 33.1 or later.
 - **`NoteValidationRequest` is public** ([#535](https://github.com/aztec-labs-eng/aztec-node/pull/535)), exported from `aztec::messages::processing` with `owner()`, `storage_slot()`, `packed_note()` and `tx_hash()` accessors.
 
 #### Breaking changes
+
+- **`PrivateContextOptions` has a generic parameter, and Noir tests need a test environment on oracle interface 12.0** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). Tests compiled with this version of Aztec.nr fail against an older `aztec test` with an incompatible test environment version error, so update the `aztec` CLI together with the dependency. Code that names the options type has to add the number of additional scopes; code that only builds it with `PrivateContextOptions::new()` is unaffected.
+
+  ```diff
+  - fn options() -> PrivateContextOptions {
+  + fn options() -> PrivateContextOptions<0> {
+  ```
 
 - **`compute_secret_hash` is renamed `compute_private_content_hash`, and it returns a different hash** ([#689](https://github.com/aztec-labs-eng/aztec-node/pull/689)). The two application fields of an L1-to-L2 message are renamed for what they are: `content` is the message's public content hash, and its secret hash is its private content hash. The preimage a contract reveals to consume the message is its private content, which the application defines: a single claim secret, as in the fee juice and token bridges, or something richer. The hash now uses the `DOM_SEP__PRIVATE_CONTENT_HASH` domain separator, so a contract built with this version cannot consume a message whose hash was computed the old way: claim pending messages before upgrading, or send them again afterwards. `consume_l1_to_l2_message`, `compute_l1_to_l2_message_hash` and `compute_l1_to_l2_message_nullifier` keep their arguments in the same order, under the new names.
 
