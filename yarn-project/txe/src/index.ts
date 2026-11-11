@@ -126,8 +126,8 @@ export class TXEDispatcher {
 
   /**
    * Releases a session and its resources (per-session LMDB + `NativeWorldStateService`).
-   * Called by the dispatcher pool when nargo closes its TCP connection for a test (see
-   * `rpc_server.ts`'s socket tracker). No-op if the session was never created — that happens
+   * Called once the test that owns the session has disconnected (see `rpc_server.ts`'s session
+   * lifetime tracker). No-op if the session was never created — that happens
    * when nargo opens a connection but errors before sending a request.
    */
   async disposeSession(sessionId: number): Promise<void> {
@@ -138,6 +138,13 @@ export class TXEDispatcher {
     sessions.delete(sessionId);
     await session.dispose();
   }
+}
+
+/** Disposes every session held by this worker, for when the TXE stops. */
+export async function disposeAllSessions(): Promise<void> {
+  const held = [...sessions.values()];
+  sessions.clear();
+  await Promise.allSettled(held.map(session => session.dispose()));
 }
 
 /** Diagnostic-only: number of sessions currently held by this worker. */

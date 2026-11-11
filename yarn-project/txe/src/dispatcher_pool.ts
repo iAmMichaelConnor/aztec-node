@@ -71,6 +71,7 @@ interface SerializedError {
 type WorkerMessage =
   | { type: 'result'; requestId: number; ok: true; value: ForeignCallResult }
   | { type: 'result'; requestId: number; ok: false; error: SerializedError }
+  | { type: 'all-sessions-disposed' }
   | {
       type: 'memstat';
       sessions: number;
@@ -134,6 +135,7 @@ export class TXEDispatcherPool {
   private contractStoreSourceDir?: string;
   private schnorrClassId?: string;
   private workerPath?: URL;
+  private stopped = false;
 
   constructor(
     private readonly logger: Logger,
@@ -181,7 +183,7 @@ export class TXEDispatcherPool {
     w.on('message', (msg: WorkerMessage) => this.handleMessage(workerIdx, msg));
     w.on('error', err => this.handleWorkerError(workerIdx, err));
     w.on('exit', code => {
-      if (code !== 0) {
+      if (code !== 0 && !this.stopped) {
         this.handleWorkerError(workerIdx, new Error(`Worker ${workerIdx} exited with code ${code}`));
       }
     });
@@ -194,6 +196,9 @@ export class TXEDispatcherPool {
 
   /** Routes a session-dispose request to the worker that owns the session. Fire-and-forget. */
   disposeSession(sessionId: number): void {
+    if (this.stopped) {
+      return;
+    }
     const workerIdx = this.sessionToWorker.get(sessionId);
     if (workerIdx === undefined) {
       throw new Error(`disposeSession: no worker mapped for session ${sessionId}`);
@@ -229,8 +234,26 @@ export class TXEDispatcherPool {
     });
   }
 
-  /** Terminates all workers. Used by tests; production TXE exits the process directly. */
+  /** Disposes every session and terminates all workers. The pool is not to be used afterwards. */
   async shutdown(): Promise<void> {
+    this.stopped = true;
+    await Promise.all(
+      this.workers.map(
+        ({ worker }) =>
+          new Promise<void>(resolve => {
+            const onMessage = (msg: WorkerMessage) => {
+              if (msg.type === 'all-sessions-disposed') {
+                worker.off('message', onMessage);
+                resolve();
+              }
+            };
+            worker.on('message', onMessage);
+            worker.once('exit', () => resolve());
+            worker.postMessage({ type: 'dispose-all-sessions' });
+          }),
+      ),
+    );
+    this.sessionToWorker.clear();
     const slots = this.workers.splice(0, this.workers.length);
     await Promise.all(slots.map(s => s.worker.terminate()));
     for (const [requestId, pending] of this.pending) {
@@ -264,6 +287,8 @@ export class TXEDispatcherPool {
     switch (msg.type) {
       case 'result':
         this.handleResult(workerIdx, msg);
+        return;
+      case 'all-sessions-disposed':
         return;
       case 'memstat':
         this.logger.debug(`worker ${workerIdx} memstat`, {

@@ -6,7 +6,13 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 // Importing `./index.js` registers the msgpackr Fr extension transitively (via
 // ./msgpackr_fr_extension.js); this must happen before any `sendMessage` call.
-import { TXEDispatcher, type TXEDispatcherOptions, type TXEForeignCallInput, activeSessionCount } from './index.js';
+import {
+  TXEDispatcher,
+  type TXEDispatcherOptions,
+  type TXEForeignCallInput,
+  activeSessionCount,
+  disposeAllSessions,
+} from './index.js';
 
 // Seed both bb.js singletons with the WASM backend before any crypto call. `initSingleton`
 // binds the singleton to whichever backend the first call requests, so this pre-empts the
@@ -46,7 +52,11 @@ interface DisposeSessionMessage {
   sessionId: number;
 }
 
-type IncomingMessage = ForeignCallRequest | DisposeSessionMessage;
+interface DisposeAllSessionsMessage {
+  type: 'dispose-all-sessions';
+}
+
+type IncomingMessage = ForeignCallRequest | DisposeSessionMessage | DisposeAllSessionsMessage;
 
 interface SerializedError {
   message: string;
@@ -94,6 +104,9 @@ port.on('message', (msg: IncomingMessage) => {
     case 'dispose-session':
       // Fire-and-forget; the main thread does not wait for confirmation.
       void dispatcher.disposeSession(msg.sessionId).catch(err => logger.warn(`disposeSession failed`, err));
+      return;
+    case 'dispose-all-sessions':
+      void disposeAllSessions().finally(() => port.postMessage({ type: 'all-sessions-disposed' }));
       return;
   }
 });
