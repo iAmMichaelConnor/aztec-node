@@ -1,9 +1,8 @@
 #!/usr/bin/env -S node --no-warnings
 import { getEnv } from '@aztec-labs/foundation/config/env';
-import { startHttpRpcServer } from '@aztec-labs/foundation/json-rpc/server';
 import { createLogger } from '@aztec-labs/foundation/log';
 
-import { createTXERpcServer } from '../rpc_server.js';
+import { startTXEHttpServer } from '../rpc_server.js';
 
 // Cap the native world-state thread pool before any import touches @aztec-labs/world-state.
 // `MAX_WORLD_STATE_THREADS` reads HARDWARE_CONCURRENCY at module load and defaults to 16; the
@@ -34,12 +33,7 @@ async function main() {
   const logger = createLogger('txe:rpc');
   logger.info(`Setting up TXE...`);
 
-  const txeServer = await createTXERpcServer(logger);
-  const { port } = await startHttpRpcServer(txeServer, {
-    host: '127.0.0.1',
-    port: TXE_PORT,
-    timeoutMs: 1e3 * 60 * 5,
-  });
+  const { port } = await startTXEHttpServer(logger, { host: '127.0.0.1', port: TXE_PORT });
 
   logger.info(`TXE listening on port ${port}`);
 }

@@ -98,6 +98,8 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### Fixes
 
+- **A Noir test keeps its `TestEnvironment` state while it computes between two oracle calls** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). The test environment used to drop a test's state after a few seconds without an oracle call, so a test with a long stretch of unconstrained computation continued against an empty environment and failed with missing accounts, notes or storage. A test can now go up to an hour between calls, and a test whose environment was disposed fails with an error that says so.
+
 ### PXE
 
 #### New features
