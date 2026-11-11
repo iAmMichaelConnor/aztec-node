@@ -21,8 +21,24 @@ function aztec {
 case $cmd in
   test)
     txe_port=8081
+    # --unconstrained is an option of `aztec test` itself; every other argument is forwarded to `nargo test`.
+    unconstrained=0
+    for arg in "$@"; do
+      shift
+      if [ "$arg" == "--unconstrained" ]; then
+        unconstrained=1
+      else
+        set -- "$@" "$arg"
+      fi
+    done
     # Attempt to compile, no-op if there are no changes
-    node --no-warnings "$script_dir/../dest/bin/index.js" compile
+    if [ "$unconstrained" -eq 1 ]; then
+      node --no-warnings "$script_dir/../dest/bin/index.js" compile --unconstrained
+    else
+      node --no-warnings "$script_dir/../dest/bin/index.js" compile
+    fi
+    # Tells the TXE which builds of the contracts to load: the ones compiled above, whatever the environment says.
+    export TXE_UNCONSTRAINED=$unconstrained
 
     export LOG_LEVEL="${LOG_LEVEL:-"error;trace:^contract:"}"
     if ! command -v nc &>/dev/null; then

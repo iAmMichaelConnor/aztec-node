@@ -9,6 +9,7 @@ import {
   AZTEC_UTILITY_ATTRIBUTE,
   AZTEC_VIEW_ATTRIBUTE,
   type NoirCompiledContract,
+  isUnconstrainedBuild,
 } from '../noir/index.js';
 import {
   type ABIParameter,
@@ -303,12 +304,25 @@ export function getGlobalsByTag(artifact: ContractArtifact, tag: string): Record
 }
 
 /**
+ * Rejects unconstrained builds. The proof of one of their private functions proves nothing about its execution, so
+ * they must not reach anything that registers or deploys contracts.
+ */
+function assertConstrained(contract: NoirCompiledContract) {
+  if (isUnconstrainedBuild(contract)) {
+    throw new Error(
+      `${contract.name} is an unconstrained build (\`aztec compile --unconstrained\`), which can only be used in tests. Compile it with \`aztec compile\` to register or deploy it.`,
+    );
+  }
+}
+
+/**
  * Given a post-processed Nargo output defined as `contract` generates an Aztec-compatible contract artifact.
  *
  * Does not include public bytecode, apart from the public_dispatch function.
  */
 function generateContractArtifact(contract: NoirCompiledContract): ContractArtifact {
   try {
+    assertConstrained(contract);
     if (!contract.transpiled) {
       throw new Error("Contract's public bytecode has not been transpiled");
     }
@@ -335,6 +349,7 @@ function generateContractArtifact(contract: NoirCompiledContract): ContractArtif
  */
 function generateContractArtifactForPublic(contract: NoirCompiledContract): ContractArtifact {
   try {
+    assertConstrained(contract);
     return ContractArtifactSchema.parse({
       name: contract.name,
       aztecVersion: contract.aztec_version,

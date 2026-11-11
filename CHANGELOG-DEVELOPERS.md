@@ -191,9 +191,11 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### New features
 
+- **`aztec test --unconstrained` runs Noir tests against contracts compiled as unconstrained code** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)), which takes seconds where compiling large private functions into circuits takes minutes. `aztec compile --unconstrained` makes those builds: they are written to `target/unconstrained`, have no verification keys, and are rejected by `loadContractArtifact`, through which wallets, `aztec codegen` and `aztec deploy` read an artifact. A contract's class id and address differ between the two builds, and tests run the unconstrained path of code that branches on `is_unconstrained()`, so keep a regular `aztec test` or `aztec compile` in CI.
+
 #### Breaking changes
 
-- **`aztec compile` refuses `--force-brillig` and `--minimal-ssa`** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). These nargo options compile private functions as unconstrained code, and the artifact used to get verification keys as if they were circuits, so a proof of such a function proved nothing about its execution.
+- **`aztec compile` refuses `--force-brillig` and `--minimal-ssa`** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). These nargo options compile private functions as unconstrained code, and the artifact used to get verification keys as if they were circuits, so a proof of such a function proved nothing about its execution. Use `aztec compile --unconstrained` to compile contracts this way, for tests.
 
 - **`aztec get-l1-to-l2-message-witness` takes `--private-content` in place of `--secret`** ([#689](https://github.com/aztec-labs-eng/aztec-node/pull/689)). The flag takes one or more fields, the message's private content. For a fee juice or token bridge claim, that is the claim secret. A script that still passes `--secret` fails.
 

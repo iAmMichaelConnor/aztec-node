@@ -70,6 +70,11 @@ export interface NoirCompiledContract {
   aztec_version: string;
   /** Is the contract's public bytecode transpiled? */
   transpiled?: boolean;
+  /**
+   * Was the contract compiled with `aztec compile --unconstrained`? Its private functions are then unconstrained code
+   * without verification keys, which tests can execute but which must never be deployed.
+   */
+  unconstrained?: boolean;
   /** The functions of the contract. */
   functions: NoirFunctionEntry[];
   /** The events of the contract */
@@ -172,4 +177,21 @@ export function isNoirProgramCompilationArtifacts(
   artifact: NoirCompilationResult,
 ): artifact is NoirProgramCompilationArtifacts {
   return (artifact as NoirProgramCompilationArtifacts).program !== undefined;
+}
+
+/** The directory, inside a workspace's target directory, of the builds made by `aztec compile --unconstrained`. */
+export const UNCONSTRAINED_BUILD_DIR = 'unconstrained';
+
+/** The file in that directory that `aztec compile --unconstrained` writes last, once every artifact is in place. */
+export const UNCONSTRAINED_BUILD_COMPLETE_FILE = '.complete';
+
+/**
+ * Returns whether the contract was compiled with `aztec compile --unconstrained`. Such a build is marked, and its
+ * private functions are declared unconstrained, which those of a regular build never are. Either is enough.
+ */
+export function isUnconstrainedBuild(contract: Pick<NoirCompiledContract, 'unconstrained' | 'functions'>): boolean {
+  return (
+    contract.unconstrained === true ||
+    contract.functions.some(fn => fn.is_unconstrained && fn.custom_attributes?.includes(AZTEC_PRIVATE_ATTRIBUTE))
+  );
 }

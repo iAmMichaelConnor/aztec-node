@@ -69,6 +69,20 @@ describe('needsRecompile', () => {
     expect(await needsRecompile()).toBe(false);
   });
 
+  it('checks the artifacts of the given target directory only', async () => {
+    await mkdirp('src');
+    await mkdirp(join('target', 'unconstrained'));
+
+    await writeFile('Nargo.toml', '[package]\nname = "test"\ntype = "contract"\n');
+    await utimes('Nargo.toml', 1000, 1000);
+
+    await touch(join('src', 'main.nr'), 1000);
+    await touch(join('target', 'unconstrained', 'artifact.json'), 2000);
+
+    expect(await needsRecompile(join('target', 'unconstrained'))).toBe(false);
+    expect(await needsRecompile()).toBe(true);
+  });
+
   it('returns true when a .nr source file is newer than the newest artifact', async () => {
     await mkdirp('src');
     await mkdirp('target');

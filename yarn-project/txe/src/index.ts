@@ -1,3 +1,5 @@
+import { parseBooleanEnv } from '@aztec-labs/foundation/config';
+import { getEnv } from '@aztec-labs/foundation/config/env';
 import { Fr } from '@aztec-labs/foundation/curves/bn254';
 import type { Logger } from '@aztec-labs/foundation/log';
 import { Timer } from '@aztec-labs/foundation/timer';
@@ -100,7 +102,11 @@ export class TXEDispatcher {
       2,
     );
     this.contractStore = new ContractStore(kvStore);
-    this.artifactResolver = new TXEArtifactResolver(this.contractStore, this.schnorrClassId);
+    this.artifactResolver = new TXEArtifactResolver(
+      this.contractStore,
+      this.schnorrClassId,
+      parseBooleanEnv(getEnv().TXE_UNCONSTRAINED),
+    );
     this.logger.debug('Cloned shared protocol-contracts store', { totalMs: timer.ms() });
   }
 

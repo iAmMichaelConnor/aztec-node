@@ -2,22 +2,32 @@ import { findBbBinary } from '@aztec-foundation/bb.js';
 
 import { getEnv } from '@aztec-labs/foundation/config/env';
 import type { LogFn } from '@aztec-labs/foundation/log';
+import { UNCONSTRAINED_BUILD_COMPLETE_FILE, UNCONSTRAINED_BUILD_DIR } from '@aztec-labs/stdlib/noir';
 import { getPackageVersion } from '@aztec-labs/stdlib/update-checker';
 import { execFileSync } from 'child_process';
 import type { Command } from 'commander';
-import { readFile, writeFile } from 'fs/promises';
+import { existsSync } from 'fs';
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { readArtifactFiles } from './utils/artifacts.js';
+import { type CompiledArtifact, readArtifactFiles } from './utils/artifacts.js';
 import { needsRecompile } from './utils/needs_recompile.js';
 import { run } from './utils/spawn.js';
 import { warnIfAztecVersionMismatch } from './utils/warn_if_aztec_version_mismatch.js';
 
+const UNCONSTRAINED_FLAG = '--unconstrained';
+/** Where `aztec compile --unconstrained` writes artifacts, so that they never sit next to deployable ones. */
+const UNCONSTRAINED_TARGET_DIR = join('target', UNCONSTRAINED_BUILD_DIR);
+/** Written once every artifact of an unconstrained build is in place, and removed before the next build starts. */
+const UNCONSTRAINED_BUILD_COMPLETE = join(UNCONSTRAINED_TARGET_DIR, UNCONSTRAINED_BUILD_COMPLETE_FILE);
 /**
  * The hidden nargo options that compile every function as unconstrained code. A private function compiled this way is
  * a circuit without constraints, which nargo does not record in the artifact.
  */
 const UNCONSTRAINED_CODE_NARGO_OPTIONS = ['--force-brillig', '--minimal-ssa'];
+/** The nargo options that `--unconstrained` sets itself. */
+const NARGO_OPTIONS_SET_BY_UNCONSTRAINED = ['--force-brillig', '--inliner-aggressiveness', '--target-dir'];
 
 /** Returns the first of the given nargo options that is among the arguments, as `--option` or `--option=value`. */
 function findOption(nargoArgs: string[], options: string[]): string | undefined {
@@ -151,17 +161,99 @@ async function checkNoTestsInContracts(nargo: string, log: LogFn): Promise<void>
   }
 }
 
+/**
+ * Compiles Aztec Noir contracts for tests only: private functions become unconstrained code instead of circuits,
+ * which nargo compiles far faster for large functions and which is all that executing them takes.
+ *
+ * The proof of such a function proves nothing, so the build must never be deployable:
+ * - it is assembled in a temporary directory outside the workspace, and only finished contract artifacts are copied to
+ *   the build's directory;
+ * - its functions are declared unconstrained before bb runs, as bb generates verification keys for constrained private
+ *   functions only, and the class of a contract with a private function cannot be computed without them;
+ * - it is marked, which the artifact loaders reject.
+ */
+async function compileUnconstrained(nargoArgs: string[], nargo: string, bb: string, log: LogFn): Promise<void> {
+  const conflicting = findOption(nargoArgs, NARGO_OPTIONS_SET_BY_UNCONSTRAINED);
+  if (conflicting !== undefined) {
+    throw new Error(`${conflicting} cannot be combined with ${UNCONSTRAINED_FLAG}, which sets it itself.`);
+  }
+  if (existsSync(UNCONSTRAINED_BUILD_COMPLETE) && !(await needsRecompile(UNCONSTRAINED_TARGET_DIR))) {
+    log('No source changes detected, skipping compilation.');
+    return;
+  }
+
+  await mkdir(UNCONSTRAINED_TARGET_DIR, { recursive: true });
+  await rm(UNCONSTRAINED_BUILD_COMPLETE, { force: true });
+  // Outside the workspace, so that what an interrupted compilation leaves behind is not found by anything that scans
+  // target directories for artifacts.
+  const stagingDir = await mkdtemp(join(tmpdir(), 'aztec-unconstrained-'));
+  try {
+    // Without inlining, the default of which can take many minutes on large functions compiled as unconstrained code.
+    const unconstrainedArgs = ['--force-brillig', '--inliner-aggressiveness', '0'];
+    await run(nargo, ['compile', ...unconstrainedArgs, '--target-dir', stagingDir, ...nargoArgs]);
+
+    // Programs that are not contracts are left behind in the staging directory: they could not be marked.
+    const contracts = (await readArtifactFiles(stagingDir)).filter(f => Array.isArray(f.content.functions));
+    const rewrite = async (update: (artifact: CompiledArtifact) => void) => {
+      for (const { filePath } of contracts) {
+        const artifact: CompiledArtifact = JSON.parse(await readFile(filePath, 'utf-8'));
+        update(artifact);
+        await writeFile(filePath, JSON.stringify(artifact, null, 2) + '\n');
+      }
+    };
+
+    await rewrite(artifact => {
+      for (const fn of artifact.functions) {
+        // eslint-disable-next-line camelcase
+        fn.is_unconstrained = true;
+      }
+    });
+    if (contracts.length > 0) {
+      log('Postprocessing contracts...');
+      await run(bb, ['aztec_process', ...contracts.flatMap(a => ['-i', a.filePath])]);
+    }
+    // The transpiler drops fields it does not know, so the artifact is marked and stamped after it has run.
+    const version = getPackageVersion();
+    await rewrite(artifact => {
+      if (artifact.functions.some(fn => fn.verification_key !== undefined || !fn.is_unconstrained)) {
+        throw new Error(
+          'An unconstrained build has a verification key or a function that is not declared unconstrained.',
+        );
+      }
+      artifact.unconstrained = true;
+      // eslint-disable-next-line camelcase
+      artifact.aztec_version = version;
+    });
+
+    for (const { filePath, name } of contracts) {
+      const artifactPath = join(UNCONSTRAINED_TARGET_DIR, `${name}.json`);
+      await copyFile(filePath, `${artifactPath}.partial`);
+      await rename(`${artifactPath}.partial`, artifactPath);
+    }
+    await writeFile(UNCONSTRAINED_BUILD_COMPLETE, '');
+  } finally {
+    await rm(stagingDir, { recursive: true, force: true });
+  }
+
+  // Ensure contract crates contain no tests (tests belong in the test crate).
+  await checkNoTestsInContracts(nargo, log);
+  log('Compilation complete!');
+}
+
 /** Compiles Aztec Noir contracts and postprocesses artifacts. */
-async function compileAztecContract(nargoArgs: string[], log: LogFn): Promise<void> {
+async function compileAztecContract(nargoArgs: string[], unconstrained: boolean, log: LogFn): Promise<void> {
   await warnIfAztecVersionMismatch(log);
 
   const nargo = getEnv().NARGO ?? 'nargo';
   const bb = getEnv().BB ?? findBbBinary() ?? 'bb';
 
+  if (unconstrained) {
+    return compileUnconstrained(nargoArgs, nargo, bb, log);
+  }
   const unconstrainedCodeOption = findOption(nargoArgs, UNCONSTRAINED_CODE_NARGO_OPTIONS);
   if (unconstrainedCodeOption !== undefined) {
     throw new Error(
-      `${unconstrainedCodeOption} compiles private functions as unconstrained code, and the artifact would be given verification keys as if they were circuits.`,
+      `${unconstrainedCodeOption} compiles private functions as unconstrained code, and the artifact would be given verification keys as if they were circuits. Use ${UNCONSTRAINED_FLAG} to compile contracts this way, for tests.`,
     );
   }
 
@@ -198,8 +290,12 @@ export function injectCompileCommand(program: Command, log: LogFn): Command {
     .argument('[nargo-args...]')
     .passThroughOptions()
     .allowUnknownOption()
+    .option(
+      UNCONSTRAINED_FLAG,
+      `Compile private functions as unconstrained code, for tests only. Much faster for contracts with large private functions. Artifacts are written to ${UNCONSTRAINED_TARGET_DIR}, have no verification keys and cannot be deployed.`,
+    )
     .description(
-      'Compile Aztec Noir contracts using nargo and postprocess them to generate transpiled artifacts and verification keys. All options are forwarded to nargo compile.',
+      'Compile Aztec Noir contracts using nargo and postprocess them to generate transpiled artifacts and verification keys. All other options are forwarded to nargo compile.',
     )
     .addHelpText('after', () => {
       // Show nargo's own compile options so users see all available flags in one place.
@@ -211,7 +307,14 @@ export function injectCompileCommand(program: Command, log: LogFn): Command {
         return '\n(Run "nargo compile --help" to see available nargo options)';
       }
     })
-    .action((nargoArgs: string[]) => compileAztecContract(nargoArgs, log));
+    .action((nargoArgs: string[], options: { unconstrained?: boolean }) =>
+      // Options after the first nargo argument are passed through unparsed, so the flag may also be among them.
+      compileAztecContract(
+        nargoArgs.filter(arg => arg !== UNCONSTRAINED_FLAG),
+        options.unconstrained === true || nargoArgs.includes(UNCONSTRAINED_FLAG),
+        log,
+      ),
+    );
 
   return program;
 }

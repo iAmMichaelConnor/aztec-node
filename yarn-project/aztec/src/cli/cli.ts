@@ -40,6 +40,8 @@ Additional commands:
   init               creates a new Aztec Noir workspace in the current directory.
   new <name>         creates a new Aztec Noir workspace in its own directory (or creates a new contract-test crates pair and adds it to the current workspace if run in workspace).
   test [options]     starts a TXE and runs "nargo test" using it as the oracle resolver.
+                     With --unconstrained, tests run against unconstrained builds of the contracts, which compile
+                     much faster (see "aztec compile --help").
     `,
     );
   }
