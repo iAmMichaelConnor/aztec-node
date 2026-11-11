@@ -62,9 +62,9 @@ function cleanupArtifacts() {
   rmSync(join(WORKSPACE, 'codegenCache.json'), { force: true });
 }
 
-function runCompile() {
+function runCompile(args: string[] = []) {
   try {
-    execFileSync('node', [CLI, 'compile'], { cwd: WORKSPACE, stdio: 'pipe' });
+    execFileSync('node', [CLI, 'compile', ...args], { cwd: WORKSPACE, stdio: 'pipe' });
   } catch (e: any) {
     throw new Error(`compile failed:\n${e.stderr?.toString() ?? e.message}`);
   }
@@ -112,6 +112,18 @@ describe('aztec compile postprocesses pre-existing untranspiled artifacts', () =
     const afterAztecCompile = JSON.parse(readFileSync(CONTRACT_ARTIFACT, 'utf-8'));
     expect(afterAztecCompile.transpiled).toBe(true);
   }, 120_000);
+});
+
+describe('aztec compile with nargo options that compile unconstrained code', () => {
+  afterAll(() => {
+    cleanupArtifacts();
+  });
+
+  it.each(['--force-brillig', '--minimal-ssa'])('refuses %s', option => {
+    cleanupArtifacts();
+    expect(() => runCompile([option])).toThrow(/compiles private functions as unconstrained code/);
+    expect(existsSync(TARGET)).toBe(false);
+  });
 });
 
 // Validates that aztec compile warns when contract crates contain tests. We want tests to be in a separate `lib` crate.

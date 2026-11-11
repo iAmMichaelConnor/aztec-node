@@ -193,6 +193,8 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### Breaking changes
 
+- **`aztec compile` refuses `--force-brillig` and `--minimal-ssa`** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). These nargo options compile private functions as unconstrained code, and the artifact used to get verification keys as if they were circuits, so a proof of such a function proved nothing about its execution.
+
 - **`aztec get-l1-to-l2-message-witness` takes `--private-content` in place of `--secret`** ([#689](https://github.com/aztec-labs-eng/aztec-node/pull/689)). The flag takes one or more fields, the message's private content. For a fee juice or token bridge claim, that is the claim secret. A script that still passes `--secret` fails.
 
 #### Deprecations
