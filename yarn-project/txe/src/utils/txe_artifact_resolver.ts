@@ -1,7 +1,8 @@
+import { MEGA_APP_VK_LENGTH_IN_FIELDS } from '@aztec-labs/constants';
 import { Fr } from '@aztec-labs/foundation/curves/bn254';
 import { createLogger } from '@aztec-labs/foundation/log';
 import type { ContractStore } from '@aztec-labs/pxe/client/lazy';
-import { loadContractArtifact } from '@aztec-labs/stdlib/abi';
+import { type ContractArtifact, loadContractArtifact } from '@aztec-labs/stdlib/abi';
 import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 import {
   type ContractArtifactWithHash,
@@ -10,11 +11,22 @@ import {
   getContractInstanceFromInstantiationParams,
 } from '@aztec-labs/stdlib/contract';
 import { PublicKeys, deriveKeys } from '@aztec-labs/stdlib/keys';
-import type { NoirCompiledContract } from '@aztec-labs/stdlib/noir';
+import {
+  AZTEC_PRIVATE_ATTRIBUTE,
+  type NoirCompiledContract,
+  UNCONSTRAINED_BUILD_DIR,
+  isUnconstrainedBuild,
+} from '@aztec-labs/stdlib/noir';
+import { Buffer } from 'buffer';
 import { createHash } from 'crypto';
-import { createReadStream } from 'fs';
+import { createReadStream, existsSync } from 'fs';
 import { readFile, readdir } from 'fs/promises';
 import { join, parse } from 'path';
+
+/** Where `aztec compile` writes artifacts, relative to a workspace root. */
+const TARGET_DIR = 'target';
+/** Where `aztec compile --unconstrained` writes artifacts, relative to a workspace root. */
+const UNCONSTRAINED_TARGET_DIR = join(TARGET_DIR, UNCONSTRAINED_BUILD_DIR);
 
 export interface ResolvedArtifact {
   artifact: ContractArtifactWithHash;
@@ -59,6 +71,9 @@ class AsyncCache<K, V> {
  * Two cache levels are kept: full deploys (artifact + computed instance) keyed by the full deploy context, and loaded +
  * hashed artifacts keyed by the compiled-bytecode hash so deploys of the same contract with different args / salt /
  * deployer reuse the same `ContractArtifactWithHash`.
+ *
+ * With `unconstrained` set, contracts are loaded from the unconstrained builds that `aztec compile --unconstrained`
+ * produces, and only from those.
  */
 export class TXEArtifactResolver {
   #deployments = new AsyncCache<string, ResolvedArtifact>();
@@ -68,6 +83,7 @@ export class TXEArtifactResolver {
   constructor(
     private readonly contractStore: ContractStore,
     private readonly schnorrClassId: Fr,
+    private readonly unconstrained = false,
   ) {}
 
   /** Resolves the Schnorr account contract artifact and instance for the given secret, caching the result. */
@@ -103,6 +119,10 @@ export class TXEArtifactResolver {
     const publicKeysHash = await publicKeys.hash();
 
     const artifactPath = await this.#resolveArtifactPath(rootPath, packageName, contractPath);
+    if (!existsSync(artifactPath)) {
+      const compileCommand = this.unconstrained ? 'aztec compile --unconstrained' : 'aztec compile';
+      throw new Error(`Contract artifact ${artifactPath} not found. Compile its workspace with \`${compileCommand}\`.`);
+    }
     const fileHash = await this.#fastHashFile(artifactPath);
 
     const { dir: contractDirectory, base: contractFilename } = parse(contractPath);
@@ -127,23 +147,25 @@ export class TXEArtifactResolver {
 
   async #resolveArtifactPath(rootPath: string, packageName: string, contractPath: string): Promise<string> {
     const { dir: contractDirectory, base: contractFilename } = parse(contractPath);
+    const targetDir = this.unconstrained ? UNCONSTRAINED_TARGET_DIR : TARGET_DIR;
     if (contractDirectory) {
       if (contractDirectory.includes('@')) {
         // env.deploy("../path/to/workspace/root@packageName/contractName")
         const [workspace, pkg] = contractDirectory.split('@');
-        const targetPath = join(rootPath, workspace, '/target');
+        const targetPath = join(rootPath, workspace, targetDir);
         this.#logger.debug(`Looking for compiled artifact in workspace ${targetPath}`);
         return join(targetPath, `${pkg}-${contractFilename}.json`);
       } else {
         // env.deploy("../path/to/contract/root/contractName")
-        const targetPath = join(rootPath, contractDirectory, '/target');
+        const targetPath = join(rootPath, contractDirectory, targetDir);
         this.#logger.debug(`Looking for compiled artifact in ${targetPath}`);
-        const [artifactPath] = (await readdir(targetPath)).filter(file => file.endsWith(`-${contractFilename}.json`));
-        return artifactPath;
+        const files = existsSync(targetPath) ? await readdir(targetPath) : [];
+        const fileName = files.find(file => file.endsWith(`-${contractFilename}.json`));
+        return join(targetPath, fileName ?? `*-${contractFilename}.json`);
       }
     } else {
       // env.deploy("contractName")
-      return join(rootPath, './target', `${packageName}-${contractFilename}.json`);
+      return join(rootPath, targetDir, `${packageName}-${contractFilename}.json`);
     }
   }
 
@@ -187,7 +209,9 @@ export class TXEArtifactResolver {
     const artifact = await this.#artifacts.getOrCompute(fileHash, async () => {
       this.#logger.debug(`Loading compiled artifact ${artifactPath}`);
       const artifactJSON = JSON.parse(await readFile(artifactPath, 'utf-8')) as NoirCompiledContract;
-      const artifactWithoutHash = loadContractArtifact(artifactJSON);
+      const artifactWithoutHash = this.unconstrained
+        ? loadUnconstrainedBuild(artifactJSON, artifactPath)
+        : loadContractArtifact(artifactJSON);
       return { ...artifactWithoutHash, artifactHash: await computeArtifactHash(artifactWithoutHash) };
     });
     this.#logger.debug(
@@ -219,4 +243,28 @@ export class TXEArtifactResolver {
       fd.pipe(hash);
     });
   }
+}
+
+/**
+ * Loads an unconstrained build, which has no verification keys and which `loadContractArtifact` rejects so that it is
+ * never deployed. The TXE executes private functions without proving them, so it gives each one a placeholder key to
+ * compute the contract class from.
+ */
+function loadUnconstrainedBuild(contract: NoirCompiledContract, artifactPath: string): ContractArtifact {
+  if (!isUnconstrainedBuild(contract)) {
+    throw new Error(
+      `${artifactPath} is not an unconstrained build. Compile the contract with \`aztec compile --unconstrained\`.`,
+    );
+  }
+  const placeholderKey = Buffer.alloc(MEGA_APP_VK_LENGTH_IN_FIELDS * Fr.SIZE_IN_BYTES).toString('base64');
+  return loadContractArtifact({
+    ...contract,
+    unconstrained: false,
+    functions: contract.functions.map(fn =>
+      fn.custom_attributes.includes(AZTEC_PRIVATE_ATTRIBUTE)
+        ? // eslint-disable-next-line camelcase
+          { ...fn, is_unconstrained: false, verification_key: placeholderKey }
+        : fn,
+    ),
+  });
 }
