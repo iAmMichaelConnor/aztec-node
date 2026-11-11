@@ -13,6 +13,17 @@ import { needsRecompile } from './utils/needs_recompile.js';
 import { run } from './utils/spawn.js';
 import { warnIfAztecVersionMismatch } from './utils/warn_if_aztec_version_mismatch.js';
 
+/**
+ * The hidden nargo options that compile every function as unconstrained code. A private function compiled this way is
+ * a circuit without constraints, which nargo does not record in the artifact.
+ */
+const UNCONSTRAINED_CODE_NARGO_OPTIONS = ['--force-brillig', '--minimal-ssa'];
+
+/** Returns the first of the given nargo options that is among the arguments, as `--option` or `--option=value`. */
+function findOption(nargoArgs: string[], options: string[]): string | undefined {
+  return nargoArgs.find(arg => options.includes(arg.split('=')[0]));
+}
+
 /** Returns contract artifacts in the target directory along with whether each has already been postprocessed. */
 async function collectContractArtifacts(): Promise<ContractArtifactInfo[]> {
   let files;
@@ -146,6 +157,13 @@ async function compileAztecContract(nargoArgs: string[], log: LogFn): Promise<vo
 
   const nargo = getEnv().NARGO ?? 'nargo';
   const bb = getEnv().BB ?? findBbBinary() ?? 'bb';
+
+  const unconstrainedCodeOption = findOption(nargoArgs, UNCONSTRAINED_CODE_NARGO_OPTIONS);
+  if (unconstrainedCodeOption !== undefined) {
+    throw new Error(
+      `${unconstrainedCodeOption} compiles private functions as unconstrained code, and the artifact would be given verification keys as if they were circuits.`,
+    );
+  }
 
   const shouldRecompile = await needsRecompile();
   if (shouldRecompile) {
