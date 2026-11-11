@@ -71,6 +71,39 @@ describe('TXEArtifactResolver', () => {
     await expect(resolveToken(makeResolver(true))).rejects.toThrow(/aztec compile --unconstrained/);
   });
 
+  it('deploys only contracts of the deployable packages, if those are given', async () => {
+    await writeBuild('target', constrainedBuild);
+    const resolverFor = (packages: string[]) =>
+      new TXEArtifactResolver({} as ContractStore, Fr.ZERO, false, new Set(packages));
+
+    await expect(resolveToken(resolverFor(['token_contract']))).resolves.toBeDefined();
+    await expect(resolveToken(resolverFor(['nft_contract']))).rejects.toThrow(
+      /add token_contract to the dependencies of token_contract/,
+    );
+    await expect(resolveToken(resolverFor([]))).rejects.toThrow(/does not depend on/);
+  });
+
+  it('applies the deployable packages to contracts of other packages of the workspace', async () => {
+    await writeBuild('target', constrainedBuild);
+    const resolve = (packages: string[]) =>
+      new TXEArtifactResolver({} as ContractStore, Fr.ZERO, false, new Set(packages)).resolveDeployArtifact({
+        rootPath,
+        packageName: 'amm_test',
+        contractPath: '@token_contract/Token',
+        initializer: '',
+        args: [],
+        secret: Fr.ZERO,
+        salt: Fr.ONE,
+        deployer: AztecAddress.ZERO,
+        immutablesHash: Fr.ZERO,
+      });
+
+    await expect(resolve(['token_contract'])).resolves.toBeDefined();
+    await expect(resolve(['amm_contract'])).rejects.toThrow(
+      /amm_test deploys Token of token_contract, which it does not depend on/,
+    );
+  });
+
   it('does not deploy an unconstrained build unless asked to', async () => {
     await writeBuild('target', unconstrainedBuild);
 

@@ -1,5 +1,7 @@
 import { findBbBinary } from '@aztec-foundation/bb.js';
 
+import { asyncPool } from '@aztec-labs/foundation/async-pool';
+import { compactArray } from '@aztec-labs/foundation/collection';
 import { getEnv } from '@aztec-labs/foundation/config/env';
 import type { LogFn } from '@aztec-labs/foundation/log';
 import { UNCONSTRAINED_BUILD_DIR } from '@aztec-labs/stdlib/noir';
@@ -10,7 +12,13 @@ import { readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 
 import { type CompiledArtifact, readArtifactFiles } from './utils/artifacts.js';
-import { needsRecompile } from './utils/needs_recompile.js';
+import {
+  type CompilableCrate,
+  collectCratesToCompile,
+  collectDefaultCrates,
+  extractPackage,
+} from './utils/contract_crates.js';
+import { hasArtifacts, needsRecompile } from './utils/needs_recompile.js';
 import { run } from './utils/spawn.js';
 import { warnIfAztecVersionMismatch } from './utils/warn_if_aztec_version_mismatch.js';
 
@@ -19,6 +27,9 @@ const TARGET_DIR = 'target';
 /** Where `aztec compile --unconstrained` writes artifacts, so that they never sit next to deployable ones. */
 const UNCONSTRAINED_TARGET_DIR = join(TARGET_DIR, UNCONSTRAINED_BUILD_DIR);
 const UNCONSTRAINED_FLAG = '--unconstrained';
+const WITH_CONTRACT_DEPENDENCIES_FLAG = '--with-contract-dependencies';
+/** How many stale crates of a selected package are compiled at once. nargo uses several threads for each. */
+const PACKAGE_COMPILE_CONCURRENCY = 4;
 /**
  * The nargo options of an unconstrained build. `--force-brillig`, a hidden nargo option, compiles every function as
  * unconstrained code. Without inlining, nargo compiles that code in time proportional to its size, where the default
@@ -128,20 +139,28 @@ async function getContractPackageNames(): Promise<Set<string>> {
   return contractNames;
 }
 
-/** Checks that no tests exist in contract crates and fails with a helpful message if they do. */
-async function checkNoTestsInContracts(nargo: string, log: LogFn): Promise<void> {
-  const contractPackages = await getContractPackageNames();
+/**
+ * Checks that no tests exist in contract crates and warns with a helpful message if they do. With `crates`, only those
+ * crates are checked instead of the whole workspace.
+ */
+async function checkNoTestsInContracts(nargo: string, log: LogFn, crates?: CompilableCrate[]): Promise<void> {
+  const contractPackages = crates
+    ? new Set(crates.filter(crate => crate.type === 'contract').map(crate => crate.name))
+    : await getContractPackageNames();
   if (contractPackages.size === 0) {
     return;
   }
 
-  let output: string;
-  try {
-    // We list tests for all the crates in the workspace
-    output = execFileSync(nargo, ['test', '--list-tests', '--silence-warnings'], {
+  const listTests = (packageArgs: string[]) =>
+    execFileSync(nargo, ['test', '--list-tests', '--silence-warnings', ...packageArgs], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'inherit'],
     });
+
+  let output: string;
+  try {
+    // We list tests for all the crates in the workspace, or for each of the given crates
+    output = crates ? [...contractPackages].map(name => listTests(['--package', name])).join('\n') : listTests([]);
   } catch {
     // If listing tests fails (e.g. test crate has compile errors), skip the check.
     return;
@@ -185,15 +204,94 @@ async function checkNoTestsInContracts(nargo: string, log: LogFn): Promise<void>
 }
 
 /**
- * Compiles Aztec Noir contracts and postprocesses artifacts. With `unconstrained`, private functions are compiled as
- * unconstrained code, which is much faster for large functions, and the artifacts are only usable in tests.
+ * Returns true if the workspace needs compiling. Besides the age of the artifacts, checks that every crate nargo would
+ * compile has some: the target directory may hold the result of a compilation limited to a package.
  */
-async function compileAztecContract(nargoArgs: string[], unconstrained: boolean, log: LogFn): Promise<void> {
+async function workspaceNeedsRecompile(targetDir: string): Promise<boolean> {
+  if (await needsRecompile(targetDir)) {
+    return true;
+  }
+  // A workspace whose manifests cannot be read is nargo's to report.
+  const crates = await collectDefaultCrates().catch(() => []);
+  for (const crate of crates) {
+    if (!(await hasArtifacts(targetDir, crate))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Compiles the stale crates among those a package needs: the package itself and the workspace contracts it depends
+ * on. nargo compiles a single package or the whole workspace, so each stale crate gets a run of its own. All runs are
+ * awaited before failing, so that none is left running once this process exits.
+ * @returns The crates the package needs, and those that were compiled.
+ */
+async function compileDependenciesOf(
+  nargoArgs: string[],
+  compile: (args: string[]) => Promise<void>,
+  targetDir: string,
+  log: LogFn,
+): Promise<{ crates: CompilableCrate[]; recompiled: CompilableCrate[] }> {
+  const { packageName, otherArgs } = extractPackage(nargoArgs);
+  if (packageName === undefined) {
+    throw new Error(`${WITH_CONTRACT_DEPENDENCIES_FLAG} needs a single package, selected with --package.`);
+  }
+  const crates = await collectCratesToCompile(packageName);
+  if (crates === undefined) {
+    throw new Error(`Package ${packageName} is not a member of a workspace rooted in the current directory.`);
+  }
+
+  const stale = [];
+  for (const crate of crates) {
+    if (await needsRecompile(targetDir, crate)) {
+      stale.push(crate);
+    }
+  }
+  const failures = await asyncPool(PACKAGE_COMPILE_CONCURRENCY, stale, async crate => {
+    log(`Compiling ${crate.name}...`);
+    try {
+      await compile([...otherArgs, '--package', crate.name]);
+      return undefined;
+    } catch (err) {
+      return `${crate.name} (${err instanceof Error ? err.message : err})`;
+    }
+  });
+  if (compactArray(failures).length > 0) {
+    throw new Error(`Failed to compile ${compactArray(failures).join(', ')}`);
+  }
+  return { crates, recompiled: stale };
+}
+
+/** How `aztec compile` is asked to compile, besides the arguments it forwards to nargo. */
+interface CompileOptions {
+  /**
+   * Compile private functions as unconstrained code, which is much faster for large functions. The artifacts are only
+   * usable in tests.
+   */
+  unconstrained: boolean;
+  /**
+   * Compile the selected package and the workspace contracts it depends on, each only if stale, and print the names of
+   * those contracts on stdout. Everything else is then printed on stderr.
+   */
+  withContractDependencies: boolean;
+}
+
+/** Compiles Aztec Noir contracts and postprocesses artifacts. */
+async function compileAztecContract(
+  nargoArgs: string[],
+  { unconstrained, withContractDependencies }: CompileOptions,
+  userLog: LogFn,
+): Promise<void> {
+  // The stdout of a compilation with contract dependencies is its list of contracts, for `aztec test` to read.
+  const log: LogFn = withContractDependencies ? msg => void process.stderr.write(`${msg}\n`) : userLog;
+  const runTool = (cmd: string, args: string[]) => run(cmd, args, { stdoutToStderr: withContractDependencies });
   await warnIfAztecVersionMismatch(log);
 
   const nargo = getEnv().NARGO ?? 'nargo';
   const bb = getEnv().BB ?? findBbBinary() ?? 'bb';
   const targetDir = unconstrained ? UNCONSTRAINED_TARGET_DIR : TARGET_DIR;
+  const modeArgs = unconstrained ? [...UNCONSTRAINED_NARGO_ARGS, '--target-dir', targetDir] : [];
   if (unconstrained) {
     const conflicting = nargoArgs.find(arg => UNCONSTRAINED_NARGO_OPTIONS.some(option => arg.split('=')[0] === option));
     if (conflicting !== undefined) {
@@ -201,13 +299,24 @@ async function compileAztecContract(nargoArgs: string[], unconstrained: boolean,
     }
   }
 
-  const shouldRecompile = await needsRecompile(targetDir);
-  if (shouldRecompile) {
-    const modeArgs = unconstrained ? [...UNCONSTRAINED_NARGO_ARGS, '--target-dir', targetDir] : [];
-    await run(nargo, ['compile', ...modeArgs, ...nargoArgs]);
+  let shouldRecompile: boolean;
+  let contractDependencies: CompilableCrate[] | undefined;
+  if (withContractDependencies) {
+    const compile = (args: string[]) => runTool(nargo, ['compile', ...modeArgs, ...args]);
+    const { crates, recompiled } = await compileDependenciesOf(nargoArgs, compile, targetDir, log);
+    contractDependencies = crates.filter(crate => crate.type === 'contract');
+    shouldRecompile = recompiled.length > 0;
+    if (shouldRecompile) {
+      await checkNoTestsInContracts(nargo, log, recompiled);
+    }
+  } else {
+    shouldRecompile = await workspaceNeedsRecompile(targetDir);
+    if (shouldRecompile) {
+      await runTool(nargo, ['compile', ...modeArgs, ...nargoArgs]);
 
-    // Ensure contract crates contain no tests (tests belong in the test crate).
-    await checkNoTestsInContracts(nargo, log);
+      // Ensure contract crates contain no tests (tests belong in the test crate).
+      await checkNoTestsInContracts(nargo, log);
+    }
   }
 
   // Postprocess any untranspiled artifacts: those just produced by nargo above, and any left behind by a bare
@@ -221,7 +330,7 @@ async function compileAztecContract(nargoArgs: string[], unconstrained: boolean,
       await declareUnconstrained(unprocessed, { complete: false });
     }
     const bbArgs = unprocessed.flatMap(a => ['-i', a]);
-    await run(bb, ['aztec_process', ...bbArgs]);
+    await runTool(bb, ['aztec_process', ...bbArgs]);
 
     await stampAztecVersion(unprocessed);
   }
@@ -238,6 +347,10 @@ async function compileAztecContract(nargoArgs: string[], unconstrained: boolean,
   } else {
     log('No source changes detected, skipping compilation.');
   }
+
+  for (const crate of contractDependencies ?? []) {
+    process.stdout.write(`${crate.name}\n`);
+  }
 }
 
 export function injectCompileCommand(program: Command, log: LogFn): Command {
@@ -249,6 +362,10 @@ export function injectCompileCommand(program: Command, log: LogFn): Command {
     .option(
       UNCONSTRAINED_FLAG,
       `Compile private functions as unconstrained code, for tests only. Much faster for contracts with large private functions. Artifacts are written to ${UNCONSTRAINED_TARGET_DIR}, have no verification keys and cannot be deployed.`,
+    )
+    .option(
+      WITH_CONTRACT_DEPENDENCIES_FLAG,
+      'With --package, also compile the workspace contracts the package depends on, each only if its sources changed, and print their names. Used by "aztec test --package".',
     )
     .description(
       'Compile Aztec Noir contracts using nargo and postprocess them to generate transpiled artifacts and verification keys. All other options are forwarded to nargo compile.',
@@ -263,11 +380,15 @@ export function injectCompileCommand(program: Command, log: LogFn): Command {
         return '\n(Run "nargo compile --help" to see available nargo options)';
       }
     })
-    .action((nargoArgs: string[], options: { unconstrained?: boolean }) =>
-      // Options after the first nargo argument are passed through unparsed, so the flag may also be among them.
+    .action((nargoArgs: string[], options: { unconstrained?: boolean; withContractDependencies?: boolean }) =>
+      // Options after the first nargo argument are passed through unparsed, so the flags may also be among them.
       compileAztecContract(
-        nargoArgs.filter(arg => arg !== UNCONSTRAINED_FLAG),
-        options.unconstrained === true || nargoArgs.includes(UNCONSTRAINED_FLAG),
+        nargoArgs.filter(arg => arg !== UNCONSTRAINED_FLAG && arg !== WITH_CONTRACT_DEPENDENCIES_FLAG),
+        {
+          unconstrained: options.unconstrained === true || nargoArgs.includes(UNCONSTRAINED_FLAG),
+          withContractDependencies:
+            options.withContractDependencies === true || nargoArgs.includes(WITH_CONTRACT_DEPENDENCIES_FLAG),
+        },
         log,
       ),
     );

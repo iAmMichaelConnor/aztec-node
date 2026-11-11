@@ -3,7 +3,7 @@ import { mkdir, rm, utimes, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { needsRecompile } from './needs_recompile.js';
+import { hasArtifacts, needsRecompile } from './needs_recompile.js';
 
 /** Create a file (if needed) and set its timestamp to the given value (seconds since epoch). */
 async function touch(filePath: string, timeSec: number) {
@@ -81,6 +81,57 @@ describe('needsRecompile', () => {
 
     expect(await needsRecompile(join('target', 'unconstrained'))).toBe(false);
     expect(await needsRecompile()).toBe(true);
+  });
+
+  it('checks only the artifacts and sources of the given contract crate', async () => {
+    await writeFile('Nargo.toml', '[workspace]\nmembers = ["fresh", "stale"]\n');
+    for (const name of ['fresh', 'stale']) {
+      await mkdirp(join(name, 'src'));
+      await writeFile(join(name, 'Nargo.toml'), `[package]\nname = "${name}"\ntype = "contract"\n`);
+      await utimes(join(name, 'Nargo.toml'), 1000, 1000);
+    }
+    await mkdirp('target');
+    await touch(join('fresh', 'src', 'main.nr'), 1000);
+    await touch(join('target', 'fresh-Fresh.json'), 2000);
+    await touch(join('stale', 'src', 'main.nr'), 3000);
+    await touch(join('target', 'stale-Stale.json'), 2000);
+
+    expect(await needsRecompile('target', { name: 'fresh', dir: 'fresh', type: 'contract' })).toBe(false);
+    expect(await needsRecompile('target', { name: 'stale', dir: 'stale', type: 'contract' })).toBe(true);
+    expect(await needsRecompile('target', { name: 'never_compiled', dir: 'fresh', type: 'contract' })).toBe(true);
+  });
+
+  it('recompiles a crate when one of its path dependencies changed', async () => {
+    await mkdirp(join('lib', 'src'));
+    await writeFile(join('lib', 'Nargo.toml'), '[package]\nname = "lib"\ntype = "lib"\n');
+    await utimes(join('lib', 'Nargo.toml'), 1000, 1000);
+    await mkdirp(join('app', 'src'));
+    await writeFile(
+      join('app', 'Nargo.toml'),
+      '[package]\nname = "app"\ntype = "contract"\n\n[dependencies]\nlib = { path = "../lib" }\n',
+    );
+    await utimes(join('app', 'Nargo.toml'), 1000, 1000);
+    await mkdirp('target');
+    await touch(join('app', 'src', 'main.nr'), 1000);
+    await touch(join('target', 'app-App.json'), 2000);
+    const app = { name: 'app', dir: 'app', type: 'contract' as const };
+
+    await touch(join('lib', 'src', 'lib.nr'), 1000);
+    expect(await needsRecompile('target', app)).toBe(false);
+
+    await touch(join('lib', 'src', 'lib.nr'), 3000);
+    expect(await needsRecompile('target', app)).toBe(true);
+  });
+
+  it('tells the artifacts of a contract and of a binary apart', async () => {
+    await mkdirp('target');
+    await touch(join('target', 'token-Token.json'), 2000);
+    await touch(join('target', 'circuit.json'), 2000);
+
+    expect(await hasArtifacts('target', { name: 'token', dir: 'token', type: 'contract' })).toBe(true);
+    expect(await hasArtifacts('target', { name: 'circuit', dir: 'circuit', type: 'bin' })).toBe(true);
+    expect(await hasArtifacts('target', { name: 'token', dir: 'token', type: 'bin' })).toBe(false);
+    expect(await hasArtifacts('target', { name: 'nft', dir: 'nft', type: 'contract' })).toBe(false);
   });
 
   it('returns true when a .nr source file is newer than the newest artifact', async () => {

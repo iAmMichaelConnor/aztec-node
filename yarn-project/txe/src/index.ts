@@ -102,10 +102,12 @@ export class TXEDispatcher {
       2,
     );
     this.contractStore = new ContractStore(kvStore);
+    const deployablePackages = getEnv().TXE_DEPLOYABLE_PACKAGES;
     this.artifactResolver = new TXEArtifactResolver(
       this.contractStore,
       this.schnorrClassId,
       parseBooleanEnv(getEnv().TXE_UNCONSTRAINED),
+      deployablePackages === undefined ? undefined : new Set(deployablePackages.split(',').filter(name => name !== '')),
     );
     this.logger.debug('Cloned shared protocol-contracts store', { totalMs: timer.ms() });
   }

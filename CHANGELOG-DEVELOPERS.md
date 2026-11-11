@@ -206,6 +206,14 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### Breaking changes
 
+- **`aztec test --package <name>` compiles only the contracts that package depends on** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)), each only if its sources or those of its dependencies changed, instead of every contract in the workspace. Tests that deploy no contract no longer wait for any to compile. A test that deploys a contract of the workspace must now have it among its crate's dependencies, as the crates created by `aztec new` do, or the deployment fails with an error naming the missing dependency. `aztec compile --package <name> --with-contract-dependencies` is the compilation `aztec test` runs; `aztec compile --package <name>` alone is unchanged.
+
+  ```diff
+    [dependencies]
+    aztec = { ... }
+  + token_contract = { path = "../token_contract" }
+  ```
+
 - **`aztec get-l1-to-l2-message-witness` takes `--private-content` in place of `--secret`** ([#689](https://github.com/aztec-labs-eng/aztec-node/pull/689)). The flag takes one or more fields, the message's private content. For a fee juice or token bridge claim, that is the claim secret. A script that still passes `--secret` fails.
 
 #### Deprecations

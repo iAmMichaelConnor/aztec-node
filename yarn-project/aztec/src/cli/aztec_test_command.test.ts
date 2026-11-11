@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { Buffer } from 'buffer';
 import { spawn } from 'child_process';
 import { once } from 'events';
-import { rm } from 'fs/promises';
+import { readdir, rm } from 'fs/promises';
 import { createServer } from 'net';
 import { delimiter, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,8 +11,8 @@ import { fileURLToPath } from 'url';
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const AZTEC_SH = join(PACKAGE_ROOT, 'scripts/aztec.sh');
 const WORKSPACE = join(PACKAGE_ROOT, 'test/large-output-tests');
-// A contract whose private function reports whether it runs as unconstrained code, and a test that passes only if it
-// does.
+// A contract whose private function reports whether it runs as unconstrained code and a test crate with a test that
+// passes only if it does; and a second contract with a test crate that deploys it without depending on it.
 const UNCONSTRAINED_WORKSPACE = join(PACKAGE_ROOT, 'test/unconstrained-tests');
 
 // Linux's default pipe capacity (16 pages of 4 KiB). The workspace's test output must exceed it for a stalled reader
@@ -81,6 +81,43 @@ describe('aztec test', () => {
     expect(status).not.toBe(0);
     expect(stderr).toContain('TXE exited');
   }, 120_000);
+
+  describe('--package', () => {
+    const targetDir = join(UNCONSTRAINED_WORKSPACE, 'target');
+    const compiledContracts = async () =>
+      (await readdir(join(targetDir, 'unconstrained'))).filter(file => file.endsWith('.json')).sort();
+    const cleanup = () => rm(targetDir, { recursive: true, force: true });
+    beforeEach(cleanup);
+    afterAll(cleanup);
+
+    it('compiles only the contracts that the tested package depends on', async () => {
+      const { status, stdout, stderr } = await runInBash('"$AZTEC_SH" test --unconstrained --package probe_test', {
+        cwd: UNCONSTRAINED_WORKSPACE,
+        timeoutMs: FULL_RUN_TIMEOUT_MS,
+      });
+
+      expect({ status, stderr }).toEqual({ status: 0, stderr: expect.any(String) });
+      expect(stdout).toContain('1 test passed');
+      expect(await compiledContracts()).toEqual(['probe_contract-Probe.json']);
+    }, 120_000);
+
+    it('does not deploy a contract that the tested package does not depend on, even if it is compiled', async () => {
+      const compiled = await runInBash('"$AZTEC_SH" compile --unconstrained', {
+        cwd: UNCONSTRAINED_WORKSPACE,
+        timeoutMs: FULL_RUN_TIMEOUT_MS,
+      });
+      expect(compiled.status).toBe(0);
+      expect(await compiledContracts()).toEqual(['probe_contract-Probe.json', 'unrelated_contract-Unrelated.json']);
+
+      const { status, stdout, stderr } = await runInBash('"$AZTEC_SH" test --unconstrained --package undeclared_test', {
+        cwd: UNCONSTRAINED_WORKSPACE,
+        timeoutMs: FULL_RUN_TIMEOUT_MS,
+      });
+
+      expect(status).not.toBe(0);
+      expect(stdout + stderr).toContain('add unrelated_contract to the dependencies of undeclared_test');
+    }, 180_000);
+  });
 
   describe('--unconstrained', () => {
     const targetDir = join(UNCONSTRAINED_WORKSPACE, 'target');

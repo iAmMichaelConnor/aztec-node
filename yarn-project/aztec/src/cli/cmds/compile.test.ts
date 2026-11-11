@@ -4,9 +4,9 @@ import { findBbBinary } from '@aztec-foundation/bb.js';
 import { loadContractArtifact } from '@aztec-labs/stdlib/abi';
 import { getContractClassFromArtifact } from '@aztec-labs/stdlib/contract';
 import type { NoirCompiledContract } from '@aztec-labs/stdlib/noir';
-import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { execFileSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync, rmSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -237,6 +237,63 @@ describe('aztec compile --unconstrained', () => {
     runCodegen();
     expect(existsSync(join(CODEGEN_OUT, 'SimpleContract.ts'))).toBe(true);
   }, 120_000);
+});
+
+// `aztec test --package` compiles a package with the contracts it depends on, and reads which those are.
+describe('aztec compile --package --with-contract-dependencies', () => {
+  const artifacts = () =>
+    readdirSync(TARGET)
+      .filter(file => file.endsWith('.json'))
+      .sort();
+  const compileWithDependencies = (packageName: string) =>
+    execFileSync('node', [CLI, 'compile', '--package', packageName, '--with-contract-dependencies'], {
+      cwd: WORKSPACE,
+      stdio: 'pipe',
+      encoding: 'utf-8',
+    });
+
+  beforeEach(() => {
+    cleanupArtifacts();
+  });
+
+  afterAll(() => {
+    cleanupArtifacts();
+  });
+
+  it('compiles the selected contract and prints the contracts it covers', () => {
+    expect(compileWithDependencies('simple_contract')).toEqual('simple_contract\n');
+    expect(artifacts()).toEqual(['simple_contract-SimpleContract.json']);
+  }, 120_000);
+
+  it('compiles a binary that depends on no contract, and prints no contract', () => {
+    expect(compileWithDependencies('simple_circuit')).toEqual('');
+    expect(artifacts()).toEqual(['simple_circuit.json']);
+  }, 120_000);
+
+  it('does not compile the package again while it is up to date', () => {
+    compileWithDependencies('simple_contract');
+    const modified = statSync(join(TARGET, 'simple_contract-SimpleContract.json')).mtimeMs;
+
+    expect(compileWithDependencies('simple_contract')).toEqual('simple_contract\n');
+    expect(statSync(join(TARGET, 'simple_contract-SimpleContract.json')).mtimeMs).toEqual(modified);
+  }, 120_000);
+
+  it('leaves the rest of the workspace for a later compilation', () => {
+    compileWithDependencies('simple_circuit');
+    runCompile();
+    expect(artifacts()).toEqual([
+      'simple_circuit.json',
+      'simple_circuit_2.json',
+      'simple_contract-SimpleContract.json',
+    ]);
+  }, 120_000);
+
+  it('needs a package of the workspace', () => {
+    expect(() =>
+      execFileSync('node', [CLI, 'compile', '--with-contract-dependencies'], { cwd: WORKSPACE, stdio: 'pipe' }),
+    ).toThrow(/needs a single package/);
+    expect(() => compileWithDependencies('missing')).toThrow(/not a member of a workspace/);
+  });
 });
 
 // Validates that aztec compile warns when contract crates contain tests. We want tests to be in a separate `lib` crate.

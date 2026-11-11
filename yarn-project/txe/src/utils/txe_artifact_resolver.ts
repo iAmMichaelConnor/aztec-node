@@ -74,6 +74,9 @@ class AsyncCache<K, V> {
  *
  * With `unconstrained` set, contracts are loaded from the unconstrained builds that `aztec compile --unconstrained`
  * produces, and only from those.
+ *
+ * With `deployablePackages` set, those are the only packages of a test's own workspace whose contracts it may deploy.
+ * `aztec test --package` passes the contracts it compiled: the artifact of any other is missing or may be out of date.
  */
 export class TXEArtifactResolver {
   #deployments = new AsyncCache<string, ResolvedArtifact>();
@@ -84,6 +87,7 @@ export class TXEArtifactResolver {
     private readonly contractStore: ContractStore,
     private readonly schnorrClassId: Fr,
     private readonly unconstrained = false,
+    private readonly deployablePackages?: ReadonlySet<string>,
   ) {}
 
   /** Resolves the Schnorr account contract artifact and instance for the given secret, caching the result. */
@@ -118,6 +122,7 @@ export class TXEArtifactResolver {
     const publicKeys = secret.equals(Fr.ZERO) ? PublicKeys.default() : (await deriveKeys(secret)).publicKeys;
     const publicKeysHash = await publicKeys.hash();
 
+    this.#assertDeployable(packageName, contractPath);
     const artifactPath = await this.#resolveArtifactPath(rootPath, packageName, contractPath);
     if (!existsSync(artifactPath)) {
       const compileCommand = this.unconstrained ? 'aztec compile --unconstrained' : 'aztec compile';
@@ -143,6 +148,22 @@ export class TXEArtifactResolver {
         immutablesHash,
       ),
     );
+  }
+
+  /** Rejects the deployment of a contract of the test's workspace that is not among the deployable packages. */
+  #assertDeployable(packageName: string, contractPath: string) {
+    const { dir: contractDirectory, base: contractName } = parse(contractPath);
+    // env.deploy("contractName") deploys from the test's own package, env.deploy("@packageName/contractName") from
+    // another package of its workspace. The other forms name a contract outside the workspace.
+    const deployedPackage = contractDirectory === '' ? packageName : contractDirectory.match(/^@(.+)$/)?.[1];
+    if (this.deployablePackages === undefined || deployedPackage === undefined) {
+      return;
+    }
+    if (!this.deployablePackages.has(deployedPackage)) {
+      throw new Error(
+        `${packageName} deploys ${contractName} of ${deployedPackage}, which it does not depend on. When testing a single package, \`aztec test\` only compiles the contracts that package depends on: add ${deployedPackage} to the dependencies of ${packageName}.`,
+      );
+    }
   }
 
   async #resolveArtifactPath(rootPath: string, packageName: string, contractPath: string): Promise<string> {

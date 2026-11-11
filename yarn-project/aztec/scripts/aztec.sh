@@ -23,19 +23,41 @@ case $cmd in
     txe_port=8081
     # --unconstrained is an option of `aztec test` itself; every other argument is forwarded to `nargo test`.
     unconstrained=0
+    unconstrained_flag=""
+    # The package under test, if exactly one is selected: only the contracts it depends on need compiling.
+    package=""
+    packages=0
+    workspace=0
+    previous_arg=""
     for arg in "$@"; do
       shift
       if [ "$arg" == "--unconstrained" ]; then
         unconstrained=1
-      else
-        set -- "$@" "$arg"
+        unconstrained_flag="--unconstrained"
+        continue
       fi
+      if [ "$previous_arg" == "--package" ]; then
+        package="$arg"
+        packages=$((packages + 1))
+      elif [[ "$arg" == --package=* ]]; then
+        package="${arg#--package=}"
+        packages=$((packages + 1))
+      elif [ "$arg" == "--workspace" ]; then
+        workspace=1
+      fi
+      previous_arg="$arg"
+      set -- "$@" "$arg"
     done
     # Attempt to compile, no-op if there are no changes
-    if [ "$unconstrained" -eq 1 ]; then
-      node --no-warnings "$script_dir/../dest/bin/index.js" compile --unconstrained
+    if [ -n "$package" ] && [ "$packages" -eq 1 ] && [ "$workspace" -eq 0 ]; then
+      # The compilation prints the contracts it covers, one per line. The TXE refuses to deploy any other contract of
+      # the workspace, as its artifact is missing or may be out of date.
+      deployable=$(node --no-warnings "$script_dir/../dest/bin/index.js" compile $unconstrained_flag \
+        --package "$package" --with-contract-dependencies)
+      export TXE_DEPLOYABLE_PACKAGES="${deployable//$'\n'/,}"
     else
-      node --no-warnings "$script_dir/../dest/bin/index.js" compile
+      node --no-warnings "$script_dir/../dest/bin/index.js" compile $unconstrained_flag
+      unset TXE_DEPLOYABLE_PACKAGES
     fi
     # Tells the TXE which builds of the contracts to load: the ones compiled above, whatever the environment says.
     export TXE_UNCONSTRAINED=$unconstrained
