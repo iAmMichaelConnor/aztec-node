@@ -11,6 +11,8 @@ export interface CompiledArtifact {
    * verification keys generated. Absent on raw `nargo compile` output, hence optional.
    */
   transpiled?: boolean;
+  /** Set to true by `aztec compile --unconstrained` once the artifact has been made unusable outside tests. */
+  unconstrained?: boolean;
 }
 
 export interface ContractFunction {
@@ -19,6 +21,7 @@ export interface ContractFunction {
   bytecode: string;
   debug_symbols: unknown;
   is_unconstrained?: boolean;
+  verification_key?: string;
 }
 
 export interface ArtifactFile {

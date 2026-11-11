@@ -201,6 +201,8 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### New features
 
+- **`aztec compile --unconstrained` compiles contracts for tests only** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). Private functions are compiled as unconstrained code instead of circuits, which takes seconds instead of minutes for functions with millions of gates. The artifacts are written to `target/unconstrained`, next to the regular ones in `target`, and have no verification keys: they cannot be registered or deployed, and loading one outside the test environment fails.
+
 #### Breaking changes
 
 - **`aztec get-l1-to-l2-message-witness` takes `--private-content` in place of `--secret`** ([#689](https://github.com/aztec-labs-eng/aztec-node/pull/689)). The flag takes one or more fields, the message's private content. For a fee juice or token bridge claim, that is the claim secret. A script that still passes `--secret` fails.

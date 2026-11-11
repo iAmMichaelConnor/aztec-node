@@ -1,14 +1,16 @@
 /* eslint-disable camelcase */
 import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { readFileSync } from 'fs';
 
 import type { NoirCompiledContract } from '../noir/index.js';
-import { getBenchmarkContractArtifact, getTestContractArtifact } from '../tests/fixtures.js';
+import { getBenchmarkContractArtifact, getPathToFixture, getTestContractArtifact } from '../tests/fixtures.js';
 import type { AbiNamedValue, AbiValue } from './abi.js';
 import {
   contractArtifactFromBuffer,
   contractArtifactToBuffer,
   getGlobalsByTag,
   loadContractArtifact,
+  loadContractArtifactForPublic,
 } from './contract_artifact.js';
 
 const storageLayoutValue = {
@@ -51,6 +53,24 @@ describe('contract_artifact', () => {
       value: storageLayoutValue,
     });
     expect(artifact.storageLayout).toEqual({ balance: { slot: new Fr(1) } });
+  });
+
+  it('refuses to load an unconstrained build', () => {
+    const contract = { ...contractWithGlobals({}), unconstrained: true };
+
+    expect(() => loadContractArtifact(contract)).toThrow(/can only be used in tests/);
+    expect(() => loadContractArtifactForPublic(contract)).toThrow(/can only be used in tests/);
+  });
+
+  it('refuses to load an unconstrained build that was left unmarked', () => {
+    const [privateFunction] = getRawTestContract().functions.filter(fn => fn.custom_attributes.includes('abi_private'));
+    const contract = {
+      ...contractWithGlobals({}),
+
+      functions: [{ ...privateFunction, is_unconstrained: true }],
+    };
+
+    expect(() => loadContractArtifact(contract)).toThrow(/can only be used in tests/);
   });
 
   it('loads the constants exported by the Test contract', () => {
@@ -112,6 +132,10 @@ describe('contract_artifact', () => {
     });
   });
 });
+
+function getRawTestContract(): NoirCompiledContract {
+  return JSON.parse(readFileSync(getPathToFixture('Test.test.json'), 'utf-8'));
+}
 
 function contractWithGlobals(globals: Record<string, AbiNamedValue[]>): NoirCompiledContract {
   return {

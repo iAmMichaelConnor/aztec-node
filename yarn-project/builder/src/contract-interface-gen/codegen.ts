@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { loadContractArtifact } from '@aztec-labs/stdlib/abi';
+import { isUnconstrainedBuild } from '@aztec-labs/stdlib/noir';
 import crypto from 'crypto';
 import { access, mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import path from 'path';
@@ -26,7 +27,7 @@ export async function generateCode(outputPath: string, fileOrDirPath: string, op
     );
     for (const file of files) {
       const fullPath = path.join(fileOrDirPath, file);
-      results.push(await generateFromNoirAbi(outputPath, fullPath, opts));
+      results.push(await generateFromNoirAbi(outputPath, fullPath, { ...opts, skipUnconstrained: true }));
     }
   } else if (stats.isFile()) {
     results.push(await generateFromNoirAbi(outputPath, fileOrDirPath, opts));
@@ -36,9 +37,15 @@ export async function generateCode(outputPath: string, fileOrDirPath: string, op
 }
 
 /**
- * Generates Noir interface or Typescript interface for a single file Noir compilation artifact.
+ * Generates Noir interface or Typescript interface for a single file Noir compilation artifact. With
+ * `skipUnconstrained`, an unconstrained build is skipped instead of being rejected: a target directory can hold the
+ * unconstrained builds of its contracts in a subdirectory, and code is only generated for the regular ones.
  */
-async function generateFromNoirAbi(outputPath: string, noirAbiPath: string, opts: GenerateCodeOptions = {}) {
+async function generateFromNoirAbi(
+  outputPath: string,
+  noirAbiPath: string,
+  opts: GenerateCodeOptions & { skipUnconstrained?: boolean } = {},
+) {
   const fileName = path.basename(noirAbiPath);
   const currentHash = await generateFileHash(noirAbiPath);
   const cachedInstance = isCacheValid(fileName, currentHash);
@@ -52,6 +59,11 @@ async function generateFromNoirAbi(outputPath: string, noirAbiPath: string, opts
 
   if (!Array.isArray(contract.functions)) {
     console.log(`${fileName} is not a contract artifact. Skipping.`);
+    return;
+  }
+
+  if (opts.skipUnconstrained && isUnconstrainedBuild(contract)) {
+    console.log(`${noirAbiPath} is an unconstrained build. Skipping.`);
     return;
   }
 
