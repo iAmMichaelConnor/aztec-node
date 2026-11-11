@@ -201,6 +201,7 @@ Note that changes to _internal_ interfaces, e.g. the aztec-nr <> PXE oracle inte
 
 #### New features
 
+- **`aztec test --unconstrained` runs Noir tests against unconstrained builds of the contracts** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). It compiles the workspace with `aztec compile --unconstrained` and has the test environment deploy those builds, so tests that deploy contracts with large private functions start in seconds instead of minutes. A test environment started by hand does the same with `TXE_UNCONSTRAINED=1 aztec start --txe`. A contract's class id and address differ between the two builds, and code that branches on `is_unconstrained()` takes its unconstrained path. The tests execute the same code but not the same circuits: keep a regular `aztec compile` or `aztec test` run, for example in CI, to catch errors that only a constrained build reports.
 - **`aztec compile --unconstrained` compiles contracts for tests only** ([#TBD](https://github.com/aztec-labs-eng/aztec-node/pull/TBD)). Private functions are compiled as unconstrained code instead of circuits, which takes seconds instead of minutes for functions with millions of gates. The artifacts are written to `target/unconstrained`, next to the regular ones in `target`, and have no verification keys: they cannot be registered or deployed, and loading one outside the test environment fails.
 
 #### Breaking changes
