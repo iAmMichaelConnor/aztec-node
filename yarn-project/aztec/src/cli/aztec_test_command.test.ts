@@ -1,8 +1,9 @@
 import { times } from '@aztec-labs/foundation/collection';
-import { describe, expect, it } from '@jest/globals';
+import { afterAll, beforeEach, describe, expect, it } from '@jest/globals';
 import { Buffer } from 'buffer';
 import { spawn } from 'child_process';
 import { once } from 'events';
+import { rm } from 'fs/promises';
 import { createServer } from 'net';
 import { delimiter, dirname, join } from 'path';
 import { fileURLToPath } from 'url';
@@ -10,6 +11,9 @@ import { fileURLToPath } from 'url';
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const AZTEC_SH = join(PACKAGE_ROOT, 'scripts/aztec.sh');
 const WORKSPACE = join(PACKAGE_ROOT, 'test/large-output-tests');
+// A contract whose private function reports whether it runs as unconstrained code, with one test that passes only if
+// it does and one that passes only if it does not.
+const UNCONSTRAINED_WORKSPACE = join(PACKAGE_ROOT, 'test/unconstrained-tests');
 
 // Linux's default pipe capacity (16 pages of 4 KiB). The workspace's test output must exceed it for a stalled reader
 // to exert backpressure.
@@ -77,18 +81,50 @@ describe('aztec test', () => {
     expect(status).not.toBe(0);
     expect(stderr).toContain('TXE exited');
   }, 120_000);
+
+  describe('--unconstrained', () => {
+    const targetDir = join(UNCONSTRAINED_WORKSPACE, 'target');
+    const cleanup = () => rm(targetDir, { recursive: true, force: true });
+    beforeEach(cleanup);
+    afterAll(cleanup);
+
+    it('tests unconstrained builds of the contracts', async () => {
+      // The option follows options of nargo, which must still reach nargo without it.
+      const { status, stdout, stderr } = await runInBash(
+        '"$AZTEC_SH" test --exact private_functions_run_unconstrained --unconstrained',
+        { cwd: UNCONSTRAINED_WORKSPACE, timeoutMs: FULL_RUN_TIMEOUT_MS },
+      );
+
+      expect({ status, stderr }).toEqual({ status: 0, stderr: expect.any(String) });
+      expect(stdout).toContain('1 test passed');
+    }, 120_000);
+
+    it('tests regular builds without it, whatever the environment says', async () => {
+      const { status, stdout, stderr } = await runInBash('"$AZTEC_SH" test --exact private_functions_run_constrained', {
+        cwd: UNCONSTRAINED_WORKSPACE,
+        env: { TXE_UNCONSTRAINED: '1' },
+        timeoutMs: FULL_RUN_TIMEOUT_MS,
+      });
+
+      expect({ status, stderr }).toEqual({ status: 0, stderr: expect.any(String) });
+      expect(stdout).toContain('1 test passed');
+    }, 120_000);
+  });
 });
 
 /**
- * Runs a bash script in the test workspace, with `$AZTEC_SH` pointing at the wrapper and nargo on the PATH. `env` adds
+ * Runs a bash script in a test workspace, with `$AZTEC_SH` pointing at the wrapper and nargo on the PATH. `env` adds
  * to the inherited environment; once `timeoutMs` elapses, the script and every process it started are killed.
  */
-async function runInBash(script: string, { env = {}, timeoutMs }: { env?: NodeJS.ProcessEnv; timeoutMs: number }) {
+async function runInBash(
+  script: string,
+  { cwd = WORKSPACE, env = {}, timeoutMs }: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number },
+) {
   const nargoDir = process.env.NARGO ? [dirname(process.env.NARGO)] : [];
   // In a process group of its own, everything the script starts, such as the TXE holding its port, can be killed along
   // with it instead of outliving the timeout. SIGKILL, since a hung process may not act on SIGTERM.
   const child = spawn('bash', ['-c', script], {
-    cwd: WORKSPACE,
+    cwd,
     detached: true,
     env: { ...process.env, AZTEC_SH, PATH: [...nargoDir, process.env.PATH].join(delimiter), ...env },
   });

@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { loadContractArtifact } from '@aztec-labs/stdlib/abi';
+import { UNCONSTRAINED_BUILD_DIR } from '@aztec-labs/stdlib/noir';
 import crypto from 'crypto';
 import { access, mkdir, readFile, readdir, stat, writeFile } from 'fs/promises';
 import path from 'path';
@@ -21,8 +22,14 @@ export async function generateCode(outputPath: string, fileOrDirPath: string, op
   const stats = await stat(fileOrDirPath);
 
   if (stats.isDirectory()) {
+    // The unconstrained builds of a target directory's contracts live in a subdirectory of it. They are for tests, and
+    // no code is generated for them.
+    const unconstrainedBuildDir = path.sep + path.join('target', UNCONSTRAINED_BUILD_DIR) + path.sep;
     const files = (await readdir(fileOrDirPath, { recursive: true, encoding: 'utf-8' })).filter(
-      file => file.endsWith('.json') && !file.startsWith('debug_'),
+      file =>
+        file.endsWith('.json') &&
+        !file.startsWith('debug_') &&
+        !path.resolve(fileOrDirPath, file).includes(unconstrainedBuildDir),
     );
     for (const file of files) {
       const fullPath = path.join(fileOrDirPath, file);

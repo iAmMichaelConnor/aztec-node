@@ -4,15 +4,15 @@ import { join } from 'path';
 import { collectCrateDirs } from './collect_crate_dirs.js';
 
 /**
- * Returns true if recompilation is needed: either no artifacts exist in target/ or any .nr or Nargo.toml source file
+ * Returns true if recompilation is needed: either no artifacts exist in targetDir or any .nr or Nargo.toml source file
  * (including path-based dependencies) is newer than the oldest artifact. We compare against the oldest artifact so
  * that a source change between the oldest and newest compilation (e.g. in a multi-contract workspace) still triggers
  * a recompile.
  *
  * Note: The above implies that if there is a random json file in the target dir we would be always recompiling.
  */
-export async function needsRecompile(): Promise<boolean> {
-  const oldestArtifactMs = await getOldestArtifactModificationTime('target');
+export async function needsRecompile(targetDir = 'target'): Promise<boolean> {
+  const oldestArtifactMs = await getOldestArtifactModificationTime(targetDir);
   if (oldestArtifactMs === undefined) {
     return true;
   }
